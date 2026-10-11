@@ -10,12 +10,12 @@ Needs gcc, make and libx11-dev.
 ## Files
 | File | Task | Contents |
 |---|---|---|
-| `terminator.h` | all | shared structs and function declarations |
-| `gui_tabs.c` | 1 | X11 window, tab bar, event loop, thread/process tab start |
-| `builtin_commands.c` | 2 | shell loop, built-ins, `$?`, shared history, prompt |
-| `multiline_input.c` | 3 | multi-line input, quoting, `$VAR`, `$(...)`, backticks, `*` globbing |
-| `io_redirection.c` | 4 | `<`, `>`, `>>` |
-| `pipes.c` | 5 | pipelines of any length |
+| `tasks/terminator.h` | all | shared structs and function declarations |
+| `tasks/gui_tabs.c` | 1 | X11 window, tab bar, event loop, thread/process tab start |
+| `tasks/builtin_commands.c` | 2 | shell loop, built-ins, `$?`, shared history, prompt |
+| `tasks/multiline_input.c` | 3 | multi-line input, quoting, `$VAR`, `$(...)`, backticks, `*` globbing |
+| `tasks/io_redirection.c` | 4 | `<`, `>`, `>>` |
+| `tasks/pipes.c` | 5 | pipelines of any length |
 
 The shell part (tasks 2 to 5) never touches X11. It only reads lines from one pipe and writes text to another.
 
