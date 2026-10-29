@@ -13,12 +13,14 @@
 #define HIST_LEN 512
 #define MAXARGS 256
 
+/* Shared history buffer across threads and processes */
 typedef struct {
     sem_t lock;
     long total;
     char cmd[HIST_MAX][HIST_LEN];
 } History;
 
+/* Per-tab shell execution state */
 typedef struct {
     int in_fd, out_fd, err_fd;
     char cwd[PATH_MAX];

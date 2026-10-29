@@ -15,20 +15,20 @@ void redirect_set(Cmd *c, TokType t, char *file)
     }
 }
 
-static void full_path(Shell *sh, const char *f, char *buf, size_t n)
+static void get_path(Shell *sh, const char *file, char *buf, size_t n)
 {
-    if (f[0] == '/')
-        snprintf(buf, n, "%s", f);
+    if (file[0] == '/')
+        snprintf(buf, n, "%s", file);
     else
-        snprintf(buf, n, "%s/%s", sh->cwd, f);
+        snprintf(buf, n, "%s/%s", sh->cwd, file);
 }
 
 int redirect_check(Shell *sh, Cmd *c)
 {
-    char path[PATH_MAX * 2 + 2];
     if (!c->in_file)
         return 0;
-    full_path(sh, c->in_file, path, sizeof path);
+    char path[PATH_MAX * 2];
+    get_path(sh, c->in_file, path, sizeof(path));
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
         say(sh->err_fd, "terminator: %s: %s\n", c->in_file, strerror(errno));
@@ -40,9 +40,10 @@ int redirect_check(Shell *sh, Cmd *c)
 
 int redirect_open_out(Shell *sh, Cmd *c)
 {
-    char path[PATH_MAX * 2 + 2];
-    full_path(sh, c->out_file, path, sizeof path);
-    int fd = open(path, O_WRONLY | O_CREAT | (c->append ? O_APPEND : O_TRUNC), 0644);
+    char path[PATH_MAX * 2];
+    get_path(sh, c->out_file, path, sizeof(path));
+    int flags = O_WRONLY | O_CREAT | (c->append ? O_APPEND : O_TRUNC);
+    int fd = open(path, flags, 0644);
     if (fd < 0)
         say(sh->err_fd, "terminator: %s: %s\n", c->out_file, strerror(errno));
     return fd;
@@ -60,7 +61,8 @@ void redirect_apply(Cmd *c)
         close(fd);
     }
     if (c->out_file) {
-        int fd = open(c->out_file, O_WRONLY | O_CREAT | (c->append ? O_APPEND : O_TRUNC), 0644);
+        int flags = O_WRONLY | O_CREAT | (c->append ? O_APPEND : O_TRUNC);
+        int fd = open(c->out_file, flags, 0644);
         if (fd < 0) {
             say(2, "terminator: %s: %s\n", c->out_file, strerror(errno));
             _exit(1);

@@ -9,13 +9,7 @@
 #include <unistd.h>
 #include "terminator.h"
 
-typedef struct {
-    char *s;
-    int len, cap, started, glob;
-} Word;
-
-static int skip_subst(const char *s, int i);
-
+/* Helper skippers to find matching delimiter */
 static int skip_sq(const char *s, int i)
 {
     while (s[i] && s[i] != '\'')
@@ -26,9 +20,7 @@ static int skip_sq(const char *s, int i)
 static int skip_bt(const char *s, int i)
 {
     while (s[i]) {
-        if (s[i] == '\\') {
-            if (!s[i + 1])
-                return -1;
+        if (s[i] == '\\' && s[i + 1]) {
             i += 2;
             continue;
         }
@@ -39,25 +31,22 @@ static int skip_bt(const char *s, int i)
     return -1;
 }
 
+static int skip_subst(const char *s, int i);
+
 static int skip_dq(const char *s, int i)
 {
-    int j;
     while (s[i]) {
-        if (s[i] == '\\') {
-            if (!s[i + 1])
-                return -1;
+        if (s[i] == '\\' && s[i + 1]) {
             i += 2;
         } else if (s[i] == '"') {
             return i;
         } else if (s[i] == '`') {
-            j = skip_bt(s, i + 1);
-            if (j < 0)
-                return -1;
+            int j = skip_bt(s, i + 1);
+            if (j < 0) return -1;
             i = j + 1;
         } else if (s[i] == '$' && s[i + 1] == '(') {
-            j = skip_subst(s, i + 2);
-            if (j < 0)
-                return -1;
+            int j = skip_subst(s, i + 2);
+            if (j < 0) return -1;
             i = j + 1;
         } else {
             i++;
@@ -68,32 +57,26 @@ static int skip_dq(const char *s, int i)
 
 static int skip_subst(const char *s, int i)
 {
-    int depth = 0, j;
+    int depth = 0;
     while (s[i]) {
         char c = s[i];
-        if (c == '\\') {
-            if (!s[i + 1])
-                return -1;
+        if (c == '\\' && s[i + 1]) {
             i += 2;
         } else if (c == '\'') {
-            j = skip_sq(s, i + 1);
-            if (j < 0)
-                return -1;
+            int j = skip_sq(s, i + 1);
+            if (j < 0) return -1;
             i = j + 1;
         } else if (c == '"') {
-            j = skip_dq(s, i + 1);
-            if (j < 0)
-                return -1;
+            int j = skip_dq(s, i + 1);
+            if (j < 0) return -1;
             i = j + 1;
         } else if (c == '`') {
-            j = skip_bt(s, i + 1);
-            if (j < 0)
-                return -1;
+            int j = skip_bt(s, i + 1);
+            if (j < 0) return -1;
             i = j + 1;
         } else if (c == '$' && s[i + 1] == '(') {
-            j = skip_subst(s, i + 2);
-            if (j < 0)
-                return -1;
+            int j = skip_subst(s, i + 2);
+            if (j < 0) return -1;
             i = j + 1;
         } else if (c == '(') {
             depth++;
@@ -112,7 +95,7 @@ static int skip_subst(const char *s, int i)
 
 int needs_more(const char *s)
 {
-    int i = 0, j;
+    int i = 0;
     while (s[i]) {
         char c = s[i];
         if (c == '\\') {
@@ -120,24 +103,20 @@ int needs_more(const char *s)
                 return 1;
             i += 2;
         } else if (c == '\'') {
-            j = skip_sq(s, i + 1);
-            if (j < 0)
-                return 1;
+            int j = skip_sq(s, i + 1);
+            if (j < 0) return 1;
             i = j + 1;
         } else if (c == '"') {
-            j = skip_dq(s, i + 1);
-            if (j < 0)
-                return 1;
+            int j = skip_dq(s, i + 1);
+            if (j < 0) return 1;
             i = j + 1;
         } else if (c == '`') {
-            j = skip_bt(s, i + 1);
-            if (j < 0)
-                return 1;
+            int j = skip_bt(s, i + 1);
+            if (j < 0) return 1;
             i = j + 1;
         } else if (c == '$' && s[i + 1] == '(') {
-            j = skip_subst(s, i + 2);
-            if (j < 0)
-                return 1;
+            int j = skip_subst(s, i + 2);
+            if (j < 0) return 1;
             i = j + 1;
         } else if (c == '#' && (i == 0 || isspace((unsigned char)s[i - 1]))) {
             while (s[i] && s[i] != '\n')
@@ -154,7 +133,7 @@ int needs_more(const char *s)
 
 static char *read_line(int fd)
 {
-    char *b = NULL;
+    char *buf = NULL;
     size_t len = 0, cap = 0;
     for (;;) {
         char c;
@@ -162,21 +141,21 @@ static char *read_line(int fd)
         if (r < 0 && errno == EINTR)
             continue;
         if (r <= 0) {
-            free(b);
+            free(buf);
             return NULL;
         }
         if (c == '\n')
             break;
         if (len + 2 > cap) {
             cap = cap ? cap * 2 : 128;
-            b = realloc(b, cap);
+            buf = realloc(buf, cap);
         }
-        b[len++] = c;
+        buf[len++] = c;
     }
-    if (!b)
+    if (!buf)
         return strdup("");
-    b[len] = 0;
-    return b;
+    buf[len] = '\0';
+    return buf;
 }
 
 int read_command(Shell *sh, char **out)
@@ -191,10 +170,10 @@ int read_command(Shell *sh, char **out)
         if (!acc) {
             acc = ln;
         } else {
-            size_t a = strlen(acc), b = strlen(ln);
-            acc = realloc(acc, a + b + 2);
-            acc[a] = '\n';
-            memcpy(acc + a + 1, ln, b + 1);
+            size_t la = strlen(acc), lb = strlen(ln);
+            acc = realloc(acc, la + lb + 2);
+            acc[la] = '\n';
+            memcpy(acc + la + 1, ln, lb + 1);
             free(ln);
         }
         if (!needs_more(acc))
@@ -225,70 +204,10 @@ void toklist_free(TokList *tl)
     tl->n = tl->cap = 0;
 }
 
-static void w_open(Word *w)
-{
-    if (!w->s) {
-        w->cap = 32;
-        w->s = calloc(1, w->cap);
-    }
-    w->started = 1;
-}
-
-static void w_add(Word *w, char c)
-{
-    w_open(w);
-    if (w->len + 2 > w->cap) {
-        w->cap *= 2;
-        w->s = realloc(w->s, w->cap);
-    }
-    w->s[w->len++] = c;
-    w->s[w->len] = 0;
-}
-
-static void flush(Shell *sh, Word *w, TokList *tl)
-{
-    if (!w->started)
-        return;
-    int done = 0;
-    if (w->glob) {
-        char pat[PATH_MAX * 2 + 2];
-        size_t pre = 0;
-        glob_t g;
-        if (w->s[0] == '/') {
-            snprintf(pat, sizeof pat, "%s", w->s);
-        } else {
-            snprintf(pat, sizeof pat, "%s/%s", sh->cwd, w->s);
-            pre = strlen(sh->cwd) + 1;
-        }
-        if (glob(pat, 0, NULL, &g) == 0) {
-            for (size_t k = 0; k < g.gl_pathc; k++)
-                toklist_add(tl, T_WORD, g.gl_pathv[k] + pre);
-            globfree(&g);
-            done = 1;
-        }
-    }
-    if (!done)
-        toklist_add(tl, T_WORD, w->s);
-    w->len = 0;
-    w->s[0] = 0;
-    w->started = 0;
-    w->glob = 0;
-}
-
-static void add_text(Shell *sh, Word *w, TokList *tl, const char *t, int quoted)
-{
-    for (; *t; t++) {
-        if (!quoted && (*t == ' ' || *t == '\t' || *t == '\n'))
-            flush(sh, w, tl);
-        else
-            w_add(w, *t);
-    }
-}
-
 char *capture_output(Shell *sh, const char *cmd)
 {
     int p[2];
-    if (pipe2(p, O_CLOEXEC) < 0)
+    if (pipe(p) < 0)
         return strdup("");
     pid_t pid = fork();
     if (pid < 0) {
@@ -299,19 +218,15 @@ char *capture_output(Shell *sh, const char *cmd)
     if (pid == 0) {
         Shell sub = *sh;
         sub.out_fd = p[1];
+        close(p[0]);
         int st = execute_line(&sub, cmd);
         _exit(st);
     }
     close(p[1]);
-    char *buf = NULL, tmp[4096];
+    char *buf = NULL, tmp[512];
     size_t len = 0, cap = 0;
     ssize_t r;
-    while ((r = read(p[0], tmp, sizeof tmp)) != 0) {
-        if (r < 0) {
-            if (errno == EINTR)
-                continue;
-            break;
-        }
+    while ((r = read(p[0], tmp, sizeof(tmp))) > 0) {
         if (len + r + 1 > cap) {
             cap = (len + r + 1) * 2;
             buf = realloc(buf, cap);
@@ -324,10 +239,71 @@ char *capture_output(Shell *sh, const char *cmd)
         ;
     if (!buf)
         return strdup("");
-    buf[len] = 0;
+    buf[len] = '\0';
     while (len > 0 && buf[len - 1] == '\n')
-        buf[--len] = 0;
+        buf[--len] = '\0';
     return buf;
+}
+
+/* Word buffer builder for tokenizer */
+typedef struct {
+    char *s;
+    int len, cap, started, glob;
+} Word;
+
+static void w_add(Word *w, char c)
+{
+    if (!w->s) {
+        w->cap = 32;
+        w->s = calloc(1, w->cap);
+    }
+    if (w->len + 2 > w->cap) {
+        w->cap *= 2;
+        w->s = realloc(w->s, w->cap);
+    }
+    w->s[w->len++] = c;
+    w->s[w->len] = '\0';
+    w->started = 1;
+}
+
+static void flush_word(Shell *sh, Word *w, TokList *tl)
+{
+    if (!w->started)
+        return;
+    int matched = 0;
+    if (w->glob) {
+        char pat[PATH_MAX * 2];
+        size_t prefix_len = 0;
+        glob_t g;
+        if (w->s[0] == '/') {
+            snprintf(pat, sizeof(pat), "%s", w->s);
+        } else {
+            snprintf(pat, sizeof(pat), "%s/%s", sh->cwd, w->s);
+            prefix_len = strlen(sh->cwd) + 1;
+        }
+        if (glob(pat, 0, NULL, &g) == 0) {
+            for (size_t k = 0; k < g.gl_pathc; k++)
+                toklist_add(tl, T_WORD, g.gl_pathv[k] + prefix_len);
+            globfree(&g);
+            matched = 1;
+        }
+    }
+    if (!matched)
+        toklist_add(tl, T_WORD, w->s);
+    w->len = 0;
+    if (w->s) w->s[0] = '\0';
+    w->started = 0;
+    w->glob = 0;
+}
+
+static void add_text(Shell *sh, Word *w, TokList *tl, const char *text, int quoted)
+{
+    for (; *text; text++) {
+        if (!quoted && isspace((unsigned char)*text))
+            flush_word(sh, w, tl);
+        else
+            w_add(w, *text);
+    }
 }
 
 static int expand_dollar(Shell *sh, const char *s, int *pi, Word *w, TokList *tl, int quoted)
@@ -336,8 +312,7 @@ static int expand_dollar(Shell *sh, const char *s, int *pi, Word *w, TokList *tl
     char c = s[i + 1];
     if (c == '(') {
         int j = skip_subst(s, i + 2);
-        if (j < 0)
-            return -1;
+        if (j < 0) return -1;
         char *cmd = strndup(s + i + 2, j - i - 2);
         char *out = capture_output(sh, cmd);
         add_text(sh, w, tl, out, quoted);
@@ -345,26 +320,25 @@ static int expand_dollar(Shell *sh, const char *s, int *pi, Word *w, TokList *tl
         free(out);
         *pi = j + 1;
     } else if (c == '?') {
-        char b[16];
-        snprintf(b, sizeof b, "%d", sh->status);
-        add_text(sh, w, tl, b, quoted);
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", sh->status);
+        add_text(sh, w, tl, buf, quoted);
         *pi = i + 2;
     } else if (c == '{') {
-        const char *e = strchr(s + i + 2, '}');
-        if (!e)
-            return -1;
-        char *name = strndup(s + i + 2, e - (s + i + 2));
-        const char *v = getenv(name);
-        add_text(sh, w, tl, v ? v : "", quoted);
+        const char *end = strchr(s + i + 2, '}');
+        if (!end) return -1;
+        char *name = strndup(s + i + 2, end - (s + i + 2));
+        const char *val = getenv(name);
+        add_text(sh, w, tl, val ? val : "", quoted);
         free(name);
-        *pi = (int)(e - s) + 1;
+        *pi = (int)(end - s) + 1;
     } else if (isalpha((unsigned char)c) || c == '_') {
         int j = i + 1;
         while (isalnum((unsigned char)s[j]) || s[j] == '_')
             j++;
         char *name = strndup(s + i + 1, j - i - 1);
-        const char *v = getenv(name);
-        add_text(sh, w, tl, v ? v : "", quoted);
+        const char *val = getenv(name);
+        add_text(sh, w, tl, val ? val : "", quoted);
         free(name);
         *pi = j;
     } else {
@@ -377,54 +351,46 @@ static int expand_dollar(Shell *sh, const char *s, int *pi, Word *w, TokList *tl
 static int expand_backtick(Shell *sh, const char *s, int *pi, Word *w, TokList *tl, int quoted)
 {
     int j = skip_bt(s, *pi + 1);
-    if (j < 0)
-        return -1;
-    char *raw = strndup(s + *pi + 1, j - *pi - 1);
-    char *cmd = malloc(strlen(raw) + 1);
+    if (j < 0) return -1;
+    char *cmd = malloc(j - *pi);
     int k = 0;
-    for (const char *p = raw; *p; p++) {
-        if (*p == '\\' && (p[1] == '`' || p[1] == '\\' || p[1] == '$'))
+    for (int p = *pi + 1; p < j; p++) {
+        if (s[p] == '\\' && (s[p + 1] == '`' || s[p + 1] == '\\' || s[p + 1] == '$'))
             p++;
-        cmd[k++] = *p;
+        cmd[k++] = s[p];
     }
-    cmd[k] = 0;
+    cmd[k] = '\0';
     char *out = capture_output(sh, cmd);
     add_text(sh, w, tl, out, quoted);
-    free(raw);
     free(cmd);
     free(out);
     *pi = j + 1;
     return 0;
 }
 
-static int bad_quote(Shell *sh)
-{
-    say(sh->err_fd, "terminator: syntax error: unterminated quote or substitution\n");
-    return -1;
-}
-
 int tokenize(Shell *sh, const char *line, TokList *tl)
 {
     Word w = {0};
     int i = 0, n = (int)strlen(line);
+
     while (i < n) {
         char c = line[i];
-        if (c == ' ' || c == '\t' || c == '\n') {
-            flush(sh, &w, tl);
+        if (isspace((unsigned char)c)) {
+            flush_word(sh, &w, tl);
             i++;
         } else if (c == '#' && !w.started) {
             while (i < n && line[i] != '\n')
                 i++;
         } else if (c == '|') {
-            flush(sh, &w, tl);
+            flush_word(sh, &w, tl);
             toklist_add(tl, T_PIPE, NULL);
             i++;
         } else if (c == '<') {
-            flush(sh, &w, tl);
+            flush_word(sh, &w, tl);
             toklist_add(tl, T_IN, NULL);
             i++;
         } else if (c == '>') {
-            flush(sh, &w, tl);
+            flush_word(sh, &w, tl);
             if (line[i + 1] == '>') {
                 toklist_add(tl, T_APPEND, NULL);
                 i += 2;
@@ -438,14 +404,17 @@ int tokenize(Shell *sh, const char *line, TokList *tl)
             i += 2;
         } else if (c == '\'') {
             int j = skip_sq(line, i + 1);
-            if (j < 0)
-                return bad_quote(sh);
-            w_open(&w);
+            if (j < 0) {
+                free(w.s);
+                say(sh->err_fd, "terminator: syntax error: unmatched quote\n");
+                return -1;
+            }
+            if (!w.started) w_add(&w, '\0'), w.len = 0;
             for (int k = i + 1; k < j; k++)
                 w_add(&w, line[k]);
             i = j + 1;
         } else if (c == '"') {
-            w_open(&w);
+            if (!w.started) w_add(&w, '\0'), w.len = 0;
             i++;
             while (i < n && line[i] != '"') {
                 if (line[i] == '\\' && i + 1 < n) {
@@ -458,27 +427,21 @@ int tokenize(Shell *sh, const char *line, TokList *tl)
                         i++;
                     }
                 } else if (line[i] == '$') {
-                    if (expand_dollar(sh, line, &i, &w, tl, 1) < 0)
-                        return bad_quote(sh);
+                    if (expand_dollar(sh, line, &i, &w, tl, 1) < 0) goto err;
                 } else if (line[i] == '`') {
-                    if (expand_backtick(sh, line, &i, &w, tl, 1) < 0)
-                        return bad_quote(sh);
+                    if (expand_backtick(sh, line, &i, &w, tl, 1) < 0) goto err;
                 } else {
                     w_add(&w, line[i++]);
                 }
             }
-            if (i >= n)
-                return bad_quote(sh);
+            if (i >= n) goto err;
             i++;
         } else if (c == '$') {
-            if (expand_dollar(sh, line, &i, &w, tl, 0) < 0)
-                return bad_quote(sh);
+            if (expand_dollar(sh, line, &i, &w, tl, 0) < 0) goto err;
         } else if (c == '`') {
-            if (expand_backtick(sh, line, &i, &w, tl, 0) < 0)
-                return bad_quote(sh);
+            if (expand_backtick(sh, line, &i, &w, tl, 0) < 0) goto err;
         } else if (c == '~' && !w.started && (i + 1 == n || strchr("/ \t\n|<>", line[i + 1]))) {
             const char *home = getenv("HOME");
-            w_open(&w);
             for (const char *p = home ? home : "~"; *p; p++)
                 w_add(&w, *p);
             i++;
@@ -489,7 +452,12 @@ int tokenize(Shell *sh, const char *line, TokList *tl)
             i++;
         }
     }
-    flush(sh, &w, tl);
+    flush_word(sh, &w, tl);
     free(w.s);
     return 0;
+
+err:
+    free(w.s);
+    say(sh->err_fd, "terminator: syntax error: unterminated quote or substitution\n");
+    return -1;
 }
