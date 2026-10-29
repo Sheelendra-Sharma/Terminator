@@ -1,21 +1,15 @@
-CC = gcc
-CFLAGS = -Wall -Wextra -O2 -D_GNU_SOURCE -pthread -Itasks
+CXX = g++
+CXXFLAGS = -std=c++17 -Wall -Wextra -pthread
+CPPFLAGS = -I.
+LDFLAGS = -pthread
 LDLIBS = -lX11
-SRC_DIR = tasks
-SRC = $(SRC_DIR)/gui_tabs.c \
-      $(SRC_DIR)/builtin_commands.c \
-      $(SRC_DIR)/multiline_input.c \
-      $(SRC_DIR)/io_redirection.c \
-      $(SRC_DIR)/pipes.c
-OBJ = $(SRC:.c=.o)
-
-terminator: $(OBJ)
-	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDLIBS)
-
-$(SRC_DIR)/%.o: $(SRC_DIR)/%.c $(SRC_DIR)/terminator.h
-	$(CC) $(CFLAGS) -c -o $@ $<
-
+SRCS = main.cpp tasks/common.cpp tasks/task1_gui.cpp tasks/task2_commands.cpp tasks/task3_parser.cpp tasks/task4_redirection.cpp tasks/task5_pipes.cpp
+OBJS = $(SRCS:.cpp=.o)
+all: terminator
+terminator: $(OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 clean:
-	rm -f terminator $(OBJ)
-
-.PHONY: clean
+	rm -f $(OBJS) terminator
+.PHONY: all clean
