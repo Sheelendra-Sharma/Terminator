@@ -3,6 +3,7 @@
 #include "task2_commands.h"
 #include "task3_parser.h"
 #include "task4_redirection.h"
+#include "task8_jobs.h"
 
 #include <array>
 #include <fcntl.h>
@@ -29,6 +30,15 @@ int run_line(Tab &tab, const string &line) {
     chdir(tab.cwd.c_str());
   }
 
+  // Check for background execution (trailing unquoted '&').
+  string stripped;
+  if (is_background(line, stripped)) {
+    int status = run_background(tab, stripped);
+    jobs_reap(tab);
+    tab.last_status = status;
+    return status;
+  }
+
   vector<Command> cmds;
   string error;
 
@@ -46,6 +56,7 @@ int run_line(Tab &tab, const string &line) {
     tab.cwd = buf;
   }
 
+  jobs_reap(tab);
   return status;
 }
 
@@ -142,6 +153,13 @@ int execute_pipeline(Tab &tab, const vector<Command> &cmds, string *capture) {
         int fd = open_input_file(cmds[i].in_file);
         if (fd >= 0) {
           dup2(fd, 0);
+          close(fd);
+        }
+      } else {
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) {
+          dup2(devnull, 0);
+          close(devnull);
         }
       }
 
@@ -151,6 +169,7 @@ int execute_pipeline(Tab &tab, const vector<Command> &cmds, string *capture) {
         int fd = open_output_for(cmds[i]);
         if (fd >= 0) {
           dup2(fd, 1);
+          close(fd);
         }
       } else {
         dup2(outpipe[1], 1);

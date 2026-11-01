@@ -1,14 +1,17 @@
 #include "task2_commands.h"
-
 #include "task3_parser.h"
 #include "task5_pipes.h"
+#include "task6_multiwatch.h"
+#include "task8_jobs.h"
 
 #include <cstdlib>
 #include <fstream>
 #include <unistd.h>
 
 bool is_builtin(const string &name) {
-  return name == "cd" || name == "exit" || name == "history" || name == "source";
+  return name == "cd" || name == "exit" || name == "history" || name == "source"
+      || name == "multiWatch" || name == "jobs" || name == "fg" || name == "bg"
+      || name == "clear";
 }
 
 int run_builtin(Tab &tab, const Command &cmd, string &out) {
@@ -74,6 +77,31 @@ int run_builtin(Tab &tab, const Command &cmd, string &out) {
     }
 
     return status;
+  }
+
+  if (name == "multiWatch") {
+    return run_multiwatch(tab, cmd.args);
+  }
+
+  if (name == "clear") {
+    tab.lines.clear();
+    tab.pending.clear();
+    return 0;
+  }
+
+  if (name == "jobs") {
+    out = jobs_list();
+    return 0;
+  }
+
+  if (name == "fg") {
+    int id = cmd.args.size() > 1 ? stoi(cmd.args[1].substr(cmd.args[1][0] == '%')) : 1;
+    return jobs_fg(tab, id);
+  }
+
+  if (name == "bg") {
+    int id = cmd.args.size() > 1 ? stoi(cmd.args[1].substr(cmd.args[1][0] == '%')) : 1;
+    return jobs_bg(tab, id);
   }
 
   return 1;

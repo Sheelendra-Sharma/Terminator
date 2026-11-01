@@ -31,6 +31,11 @@ struct Tab {
   int scroll = 0;
   int last_status = 0;
   bool exit_requested = false;
+  int cursor = 0;
+  int hist_idx = -1;
+  string saved_input;
+  bool searching_history = false;
+  string saved_search_input;
 };
 
 extern vector<string> g_history;
@@ -41,6 +46,7 @@ void append_line(Tab &tab, const string &line, int kind = LINE_OUTPUT);
 void flush_pending(Tab &tab);
 void add_history(const string &line);
 void load_history();
+vector<string> search_history(const string &term);
 
 string prompt_for(const Tab &tab);
 string short_cwd(const string &cwd);

@@ -36,7 +36,12 @@ specification (Terminator, CS69201) up to and including Task 5.
 - Task 5: Pipes of any length (`N` commands use `N-1` pipes and
   `N` child processes), combined with redirection. Unquoted `*`, `?`
   and `[...]` are expanded to matching files, and `~` expands to the
-  home directory.
+  home directory. Command output is captured through a pipe and added
+  to the active tab; commands without explicit input (such as plain
+  `cat`) receive EOF from `/dev/null`.
+- Task 9: Up to 10,000 commands are kept in shared history. `history`
+  shows the latest 1,000; Ctrl+R searches for the latest exact match or
+  commands with the longest common substring (at least 3 characters).
 
 ## Dependencies
 
@@ -145,14 +150,10 @@ terminator/
 
 ## Known limitations
 
-- Task 6 (`multiWatch`) and later tasks are not implemented, as
-  requested. That includes the `multiWatch` built-in, hotkeys from
-  Task 7 (arrow-key editing, history browsing with Up/Down, Ctrl+R
-  search, Tab completion, copy/paste), job control from Task 8 (`jobs`,
-  `fg`, `bg`, `cmd &`, Ctrl+Z), the searchable history file behaviour
-  from Task 9 beyond the shared `history` command, file-name
-  auto-completion from Task 10, and bash script interpretation from
-  Task 11 beyond the simple line-by-line `source` command.
+- Task 7 configurable key bindings, Ctrl+W word deletion and X11
+  copy/paste are not implemented. Task 10 file-name completion and
+  Task 11 bash script interpretation are also not implemented beyond
+  the simple line-by-line `source` command.
 - Process mode (`useProcess=True`) is not implemented; only thread
   mode runs. Closing a tab does not affect other tabs' buffers or
   working directories.

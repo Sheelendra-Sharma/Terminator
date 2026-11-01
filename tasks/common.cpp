@@ -1,7 +1,11 @@
 #include "common.h"
 
+#include <algorithm>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
+#include <pwd.h>
+#include <unistd.h>
 
 vector<string> g_history;
 mutex g_history_mutex;
@@ -44,21 +48,18 @@ void append_line(Tab &tab, const string &line, int kind) {
 void add_history(const string &line) {
   lock_guard<mutex> lock(g_history_mutex);
 
-  if (!line.empty()) {
-    g_history.push_back(line);
-  }
+  if (line.empty()) return;
 
+  g_history.push_back(line);
   while (g_history.size() > 10000) {
     g_history.erase(g_history.begin());
   }
 
   const char *home = getenv("HOME");
-  if (home) {
-    ofstream f(string(home) + "/.terminator_history", ios::app);
-    if (f) {
-      f << line << "\n";
-    }
-  }
+  if (!home) return;
+
+  ofstream f(string(home) + "/.terminator_history", ios::trunc);
+  for (const string &entry : g_history) f << entry << '\n';
 }
 
 void load_history() {
@@ -68,15 +69,68 @@ void load_history() {
   }
 
   ifstream f(string(home) + "/.terminator_history");
+  bool loaded = f.good();
+  deque<string> recent;
   string line;
 
-  while (getline(f, line) && g_history.size() < 10000) {
-    g_history.push_back(line);
+  while (getline(f, line)) {
+    if (line.empty()) continue;
+    recent.push_back(line);
+    if (recent.size() > 10000) recent.pop_front();
+  }
+
+  lock_guard<mutex> lock(g_history_mutex);
+  g_history.assign(recent.begin(), recent.end());
+
+  if (loaded) {
+    ofstream trimmed(string(home) + "/.terminator_history", ios::trunc);
+    for (const string &entry : g_history) trimmed << entry << '\n';
   }
 }
 
+vector<string> search_history(const string &term) {
+  lock_guard<mutex> lock(g_history_mutex);
+  if (term.empty()) return {};
+
+  for (auto it = g_history.rbegin(); it != g_history.rend(); ++it) {
+    if (*it == term) return {*it};
+  }
+
+  vector<size_t> best_by_command(g_history.size(), 0);
+  size_t best = 0;
+  vector<size_t> previous(term.size() + 1), current(term.size() + 1);
+
+  for (size_t i = 0; i < g_history.size(); ++i) {
+    fill(previous.begin(), previous.end(), 0);
+    for (char c : g_history[i]) {
+      fill(current.begin(), current.end(), 0);
+      for (size_t j = 1; j <= term.size(); ++j) {
+        if (c == term[j - 1]) current[j] = previous[j - 1] + 1;
+        best_by_command[i] = max(best_by_command[i], current[j]);
+      }
+      previous.swap(current);
+    }
+    best = max(best, best_by_command[i]);
+  }
+
+  vector<string> matches;
+  if (best <= 2) return matches;
+
+  for (size_t i = g_history.size(); i > 0; --i) {
+    if (best_by_command[i - 1] == best) matches.push_back(g_history[i - 1]);
+  }
+  return matches;
+}
+
 string prompt_for(const Tab &) {
-  return "user@terminator> ";
+  const char *username = getenv("USER");
+  if (!username || !*username) {
+    const passwd *account = getpwuid(getuid());
+    username = account ? account->pw_name : nullptr;
+  }
+
+  string name = username && *username ? username : "user";
+  return name + "@" + name + "> ";
 }
 
 string short_cwd(const string &cwd) {
