@@ -9,12 +9,14 @@ struct Job {
     pid_t pid;
     string cmd;
     JobState state;
+    int output_fd = -1;
 };
 
 extern vector<Job> g_jobs;
 extern mutex g_jobs_mutex;
 
 void jobs_add(pid_t pid, const string &cmd);
+void jobs_add_stopped(Tab &tab, pid_t pgid, const string &cmd, int output_fd);
 void jobs_reap(Tab &tab);
 string jobs_list();
 int jobs_fg(Tab &tab, int job_id);

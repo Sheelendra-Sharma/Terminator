@@ -4,10 +4,12 @@
 #include "task5_pipes.h"
 
 #include <X11/Xlib.h>
+#include <X11/Xatom.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 
 #include <algorithm>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -33,6 +35,11 @@ static vector<Tab> tabs;
 static int cur = 0;
 static int tab_scroll = 0;
 static bool running = true;
+static vector<XEvent> deferred_events;
+static Atom clipboard_atom, clipboard_property, utf8_atom;
+static string clipboard_text;
+static bool paste_pending = false;
+static bool paste_fallback = false;
 
 static unsigned long alloc_hex(int screen, const char *hex) {
   XColor col;
@@ -205,6 +212,107 @@ static bool is_ctrl(bool ctrl, KeySym sym, char c) {
   return sym == (KeySym)c || sym == (KeySym)(c - 32) || sym == (KeySym)(c - 'a' + 1);
 }
 
+static bool next_event(XEvent &event) {
+  if (!deferred_events.empty()) {
+    event = deferred_events.front();
+    deferred_events.erase(deferred_events.begin());
+  } else {
+    XNextEvent(dpy, &event);
+  }
+  return true;
+}
+
+int gui_event_fd() {
+  return dpy ? ConnectionNumber(dpy) : -1;
+}
+
+int gui_poll_job_control() {
+  if (!dpy) return 0;
+
+  while (XPending(dpy)) {
+    XEvent event;
+    if (!XCheckTypedWindowEvent(dpy, win, KeyPress, &event)) break;
+
+    KeySym key = XLookupKeysym(&event.xkey, 0);
+    bool ctrl = event.xkey.state & ControlMask;
+    bool shift = event.xkey.state & ShiftMask;
+    if (ctrl && !shift && (key == XK_c || key == XK_C)) return SIGINT;
+    if (ctrl && !shift && (key == XK_z || key == XK_Z)) return SIGTSTP;
+    deferred_events.push_back(event);
+  }
+  return 0;
+}
+
+static void copy_input_to_clipboard() {
+  clipboard_text = tabs[cur].input;
+  XSetSelectionOwner(dpy, clipboard_atom, win, CurrentTime);
+  XSetSelectionOwner(dpy, XA_PRIMARY, win, CurrentTime);
+}
+
+static void paste_from_clipboard() {
+  paste_pending = true;
+  paste_fallback = false;
+  XConvertSelection(dpy, clipboard_atom, utf8_atom, clipboard_property,
+                    win, CurrentTime);
+}
+
+static void handle_selection_request(const XSelectionRequestEvent &request) {
+  XSelectionEvent reply{};
+  reply.type = SelectionNotify;
+  reply.display = request.display;
+  reply.requestor = request.requestor;
+  reply.selection = request.selection;
+  reply.target = request.target;
+  reply.time = request.time;
+  reply.property = request.property == None ? request.target : request.property;
+
+  if (request.target == XA_STRING || request.target == utf8_atom) {
+    XChangeProperty(dpy, request.requestor, reply.property, request.target,
+                    8, PropModeReplace,
+                    (const unsigned char *)clipboard_text.data(), clipboard_text.size());
+  } else if (request.target == XInternAtom(dpy, "TARGETS", False)) {
+    Atom targets[] = {XInternAtom(dpy, "TARGETS", False), utf8_atom, XA_STRING};
+    XChangeProperty(dpy, request.requestor, reply.property, XA_ATOM,
+                    32, PropModeReplace, (unsigned char *)targets, 3);
+  } else {
+    reply.property = None;
+  }
+
+  XSendEvent(dpy, request.requestor, False, 0, (XEvent *)&reply);
+}
+
+static void handle_selection_notify(const XSelectionEvent &event) {
+  if (!paste_pending || event.selection != clipboard_atom) return;
+  if (event.property == None) {
+    if (!paste_fallback) {
+      paste_fallback = true;
+      XConvertSelection(dpy, clipboard_atom, XA_STRING, clipboard_property,
+                        win, CurrentTime);
+    } else {
+      paste_pending = false;
+    }
+    return;
+  }
+  paste_pending = false;
+
+  Atom actual_type;
+  int format;
+  unsigned long count, remaining;
+  unsigned char *data = nullptr;
+  if (XGetWindowProperty(dpy, win, clipboard_property, 0, 4096, True,
+                         AnyPropertyType, &actual_type, &format,
+                         &count, &remaining, &data) != Success || !data) return;
+
+  Tab &tab = tabs[cur];
+  tab.cursor = max(0, min(tab.cursor, (int)tab.input.size()));
+  for (unsigned long i = 0; i < count; i++) {
+    unsigned char c = data[i];
+    if (c >= 32 && c < 127) tab.input.insert(tab.cursor++, 1, (char)c);
+  }
+  XFree(data);
+  redraw();
+}
+
 static void handle_enter() {
   Tab &tab = tabs[cur];
 
@@ -280,6 +388,9 @@ int gui_run(bool process_mode) {
                             BlackPixel(dpy, screen), BlackPixel(dpy, screen));
 
   XStoreName(dpy, win, "Terminator");
+  clipboard_atom = XInternAtom(dpy, "CLIPBOARD", False);
+  clipboard_property = XInternAtom(dpy, "TERMINATOR_CLIPBOARD", False);
+  utf8_atom = XInternAtom(dpy, "UTF8_STRING", False);
 
   Atom wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
   XSetWMProtocols(dpy, win, &wm_delete, 1);
@@ -312,7 +423,7 @@ int gui_run(bool process_mode) {
 
   XEvent ev;
   while (running) {
-    XNextEvent(dpy, &ev);
+    next_event(ev);
 
     if (ev.type == Expose) {
       redraw();
@@ -322,6 +433,10 @@ int gui_run(bool process_mode) {
       redraw();
     } else if (ev.type == ClientMessage) {
       if ((Atom)ev.xclient.data.l[0] == wm_delete) running = false;
+    } else if (ev.type == SelectionRequest) {
+      handle_selection_request(ev.xselectionrequest);
+    } else if (ev.type == SelectionNotify) {
+      handle_selection_notify(ev.xselection);
 
     } else if (ev.type == ButtonPress) {
       Tab &tab = tabs[cur];
@@ -370,6 +485,15 @@ int gui_run(bool process_mode) {
       int len = XLookupString(&ev.xkey, text, sizeof(text), &keysym, nullptr);
       bool ctrl = ev.xkey.state & ControlMask;
       bool shift = ev.xkey.state & ShiftMask;
+
+      if (ctrl && shift && (keysym == XK_c || keysym == XK_C)) {
+        copy_input_to_clipboard();
+        continue;
+      }
+      if (ctrl && shift && (keysym == XK_v || keysym == XK_V)) {
+        paste_from_clipboard();
+        continue;
+      }
 
       if (keysym == XK_Return || keysym == XK_KP_Enter) {
         handle_enter();

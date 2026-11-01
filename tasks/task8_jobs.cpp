@@ -1,10 +1,13 @@
 #include "task8_jobs.h"
 
 #include "task3_parser.h"
+#include "task1_gui.h"
 #include "task5_pipes.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <csignal>
+#include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -23,6 +26,15 @@ void jobs_add(pid_t pid, const string &cmd) {
     g_jobs.push_back({next_job_id(), pid, cmd, JOB_RUNNING});
 }
 
+void jobs_add_stopped(Tab &tab, pid_t pgid, const string &cmd, int output_fd) {
+    jobs_add(pgid, cmd);
+    lock_guard<mutex> lock(g_jobs_mutex);
+    Job &job = g_jobs.back();
+    job.state = JOB_STOPPED;
+    job.output_fd = output_fd;
+    append_line(tab, "[" + to_string(job.id) + "] Stopped\t" + cmd);
+}
+
 void jobs_reap(Tab &tab) {
     lock_guard<mutex> lock(g_jobs_mutex);
 
@@ -30,16 +42,17 @@ void jobs_reap(Tab &tab) {
         if (j.state == JOB_DONE) continue;
 
         int status;
-        pid_t r = waitpid(j.pid, &status, WNOHANG | WUNTRACED);
-
-        if (r == j.pid) {
+        pid_t r;
+        while ((r = waitpid(-j.pid, &status, WNOHANG | WUNTRACED)) > 0) {
             if (WIFSTOPPED(status)) {
                 j.state = JOB_STOPPED;
                 append_line(tab, "[" + to_string(j.id) + "]+ Stopped\t" + j.cmd);
-            } else {
-                j.state = JOB_DONE;
-                append_line(tab, "[" + to_string(j.id) + "]+ Done\t\t" + j.cmd);
             }
+        }
+        if (r < 0 && errno == ECHILD) {
+            j.state = JOB_DONE;
+            if (j.output_fd >= 0) close(j.output_fd);
+            append_line(tab, "[" + to_string(j.id) + "]+ Done\t\t" + j.cmd);
         }
     }
 
@@ -62,12 +75,13 @@ string jobs_list() {
 }
 
 int jobs_fg(Tab &tab, int job_id) {
-    Job *found = nullptr;
+    Job job{};
+    bool found = false;
 
     {
         lock_guard<mutex> lock(g_jobs_mutex);
         for (auto &j : g_jobs)
-            if (j.id == job_id) { found = &j; break; }
+            if (j.id == job_id) { job = j; found = true; break; }
     }
 
     if (!found) {
@@ -75,32 +89,70 @@ int jobs_fg(Tab &tab, int job_id) {
         return 1;
     }
 
-    append_line(tab, found->cmd);
+    append_line(tab, job.cmd);
 
-    if (found->state == JOB_STOPPED)
-        kill(found->pid, SIGCONT);
-
-    found->state = JOB_RUNNING;
-
-    int status;
-    waitpid(found->pid, &status, WUNTRACED);
+    if (job.state == JOB_STOPPED) kill(-job.pid, SIGCONT);
 
     {
         lock_guard<mutex> lock(g_jobs_mutex);
+        for (auto &entry : g_jobs)
+            if (entry.id == job_id) entry.state = JOB_RUNNING;
+    }
+
+    int status = 0;
+    bool interrupted = false;
+    int xfd = gui_event_fd();
+    int output_fd = job.output_fd;
+    while (true) {
+        if (xfd >= 0 || output_fd >= 0) {
+            pollfd fds[2] = {
+                {output_fd, POLLIN, 0},
+                {xfd, POLLIN, 0}
+            };
+            poll(fds, 2, xfd >= 0 ? 100 : -1);
+            if (output_fd >= 0 && fds[0].revents & (POLLIN | POLLHUP)) {
+                char buffer[4096];
+                ssize_t count = read(output_fd, buffer, sizeof(buffer));
+                if (count > 0) append_text(tab, string(buffer, count));
+                else {
+                    close(output_fd);
+                    output_fd = -1;
+                }
+            }
+            int signal = gui_poll_job_control();
+            if (signal == SIGINT || signal == SIGTSTP) {
+                kill(-job.pid, signal);
+                if (signal == SIGINT) append_line(tab, "^C");
+                interrupted |= signal == SIGINT;
+            }
+        }
+
+        pid_t waited = waitpid(-job.pid, &status,
+                               (xfd >= 0 || output_fd >= 0 ? WNOHANG : 0) | WUNTRACED);
+        if (waited > 0 && WIFSTOPPED(status)) {
+            lock_guard<mutex> lock(g_jobs_mutex);
+            for (auto &entry : g_jobs)
+                if (entry.id == job_id) {
+                    entry.state = JOB_STOPPED;
+                    entry.output_fd = output_fd;
+                }
+            append_line(tab, "[" + to_string(job_id) + "]+ Stopped\t" + job.cmd);
+            return 128 + SIGTSTP;
+        }
+        if (waited < 0 && errno == ECHILD) break;
+        if (waited == 0 || waited > 0) continue;
+    }
+
+    {
+        lock_guard<mutex> lock(g_jobs_mutex);
+        if (output_fd >= 0) close(output_fd);
         g_jobs.erase(
             remove_if(g_jobs.begin(), g_jobs.end(),
                       [job_id](const Job &j){ return j.id == job_id; }),
             g_jobs.end());
     }
 
-    if (WIFSTOPPED(status)) {
-        jobs_add(found->pid, found->cmd);
-        lock_guard<mutex> lock(g_jobs_mutex);
-        g_jobs.back().state = JOB_STOPPED;
-        append_line(tab, "[" + to_string(job_id) + "]+ Stopped\t" + found->cmd);
-        return 128 + SIGTSTP;
-    }
-
+    if (interrupted) return 128 + SIGINT;
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
 
@@ -109,7 +161,7 @@ int jobs_bg(Tab &tab, int job_id) {
 
     for (auto &j : g_jobs) {
         if (j.id == job_id) {
-            kill(j.pid, SIGCONT);
+            kill(-j.pid, SIGCONT);
             j.state = JOB_RUNNING;
             append_line(tab, "[" + to_string(j.id) + "]+ " + j.cmd + " &");
             return 0;
@@ -166,10 +218,12 @@ int run_background(Tab &tab, const string &raw_cmd) {
 
     pid_t pid = fork();
     if (pid == 0) {
-        int status = execute_pipeline(tab, cmds, nullptr);
+        setpgid(0, 0);
+        int status = execute_pipeline_command(tab, cmds, raw_cmd, false);
         _exit(status);
     }
     if (pid < 0) return 1;
+    setpgid(pid, pid);
 
     jobs_add(pid, raw_cmd);
 

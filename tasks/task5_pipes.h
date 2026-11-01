@@ -4,3 +4,5 @@
 
 int run_line(Tab &tab, const string &line);
 int execute_pipeline(Tab &tab, const vector<Command> &cmds, string *capture);
+int execute_pipeline_command(Tab &tab, const vector<Command> &cmds,
+                             const string &command, bool interactive = true);

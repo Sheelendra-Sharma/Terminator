@@ -39,6 +39,11 @@ specification (Terminator, CS69201) up to and including Task 5.
   home directory. Command output is captured through a pipe and added
   to the active tab; commands without explicit input (such as plain
   `cat`) receive EOF from `/dev/null`.
+- Task 7: Arrow keys and Ctrl+A/E/U/K edit the input line; Up/Down browse
+  history. Ctrl+Shift+C copies the current input line through the X11
+  clipboard, and Ctrl+Shift+V pastes clipboard text at the cursor.
+- Task 8: Ctrl+C interrupts a running foreground process group. Ctrl+Z
+  suspends it and records it as a job; `jobs`, `fg`, and `bg` manage jobs.
 - Task 9: Up to 10,000 commands are kept in shared history. `history`
   shows the latest 1,000; Ctrl+R searches for the latest exact match or
   commands with the longest common substring (at least 3 characters).
@@ -150,10 +155,11 @@ terminator/
 
 ## Known limitations
 
-- Task 7 configurable key bindings, Ctrl+W word deletion and X11
-  copy/paste are not implemented. Task 10 file-name completion and
-  Task 11 bash script interpretation are also not implemented beyond
-  the simple line-by-line `source` command.
+- Task 7 configurable key bindings, Ctrl+W word deletion, and mouse
+  selection of terminal output are not implemented. Copy copies the
+  current input line. Task 10 file-name completion and Task 11 bash
+  script interpretation are also not implemented beyond the simple
+  line-by-line `source` command.
 - Process mode (`useProcess=True`) is not implemented; only thread
   mode runs. Closing a tab does not affect other tabs' buffers or
   working directories.

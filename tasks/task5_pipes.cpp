@@ -4,8 +4,10 @@
 #include "task3_parser.h"
 #include "task4_redirection.h"
 #include "task8_jobs.h"
+#include "task1_gui.h"
 
 #include <array>
+#include <csignal>
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/wait.h>
@@ -48,7 +50,7 @@ int run_line(Tab &tab, const string &line) {
     return 1;
   }
 
-  int status = execute_pipeline(tab, cmds, nullptr);
+  int status = execute_pipeline_command(tab, cmds, line);
   tab.last_status = status;
 
   char buf[4096];
@@ -60,7 +62,9 @@ int run_line(Tab &tab, const string &line) {
   return status;
 }
 
-int execute_pipeline(Tab &tab, const vector<Command> &cmds, string *capture) {
+static int execute_pipeline_impl(Tab &tab, const vector<Command> &cmds,
+                                 string *capture, const string &command,
+                                 bool interactive) {
   if (cmds.empty()) {
     return 0;
   }
@@ -142,11 +146,13 @@ int execute_pipeline(Tab &tab, const vector<Command> &cmds, string *capture) {
   }
 
   vector<pid_t> pids;
+  pid_t pgid = 0;
 
   for (int i = 0; i < n; i++) {
     pid_t pid = fork();
 
     if (pid == 0) {
+      if (interactive) setpgid(0, pgid ? pgid : 0);
       if (i > 0) {
         dup2(pipes[i - 1][0], 0);
       } else if (!cmds[i].in_file.empty()) {
@@ -211,6 +217,10 @@ int execute_pipeline(Tab &tab, const vector<Command> &cmds, string *capture) {
       return 1;
     }
 
+    if (interactive) {
+      if (!pgid) pgid = pid;
+      setpgid(pid, pgid);
+    }
     pids.push_back(pid);
   }
 
@@ -225,58 +235,104 @@ int execute_pipeline(Tab &tab, const vector<Command> &cmds, string *capture) {
   }
 
   char buf[4096];
+  bool out_open = true, err_open = use_err;
+  int xfd = interactive && !capture ? gui_event_fd() : -1;
+  bool stopped = false, interrupted = false;
+  vector<bool> child_done(pids.size(), false);
+  size_t children_left = pids.size();
+  int status = 0;
 
-  if (!use_err) {
-    ssize_t r;
-    while ((r = read(outpipe[0], buf, sizeof(buf))) > 0) {
-      append_text(tab, string(buf, r));
+  auto handle_control_key = [&]() {
+    int signal = gui_poll_job_control();
+    if (signal != SIGINT && signal != SIGTSTP) return;
+
+    kill(-pgid, signal);
+    if (signal == SIGINT) {
+      append_line(tab, "^C");
+      interrupted = true;
+      return;
     }
-    close(outpipe[0]);
-  } else {
-    bool out_open = true, err_open = true;
 
-    while (out_open || err_open) {
-      pollfd fds[2];
-      fds[0].fd = out_open ? outpipe[0] : -1;
-      fds[0].events = POLLIN;
-      fds[0].revents = 0;
-      fds[1].fd = err_open ? errpipe[0] : -1;
-      fds[1].events = POLLIN;
-      fds[1].revents = 0;
-
-      if (poll(fds, 2, -1) < 0) {
-        break;
-      }
-
-      for (int k = 0; k < 2; k++) {
-        if (fds[k].fd < 0 || !(fds[k].revents & (POLLIN | POLLHUP))) {
-          continue;
+    bool any_stopped = false;
+    for (size_t i = 0; i < pids.size(); i++) {
+      if (child_done[i]) continue;
+      int child_status;
+      pid_t result = waitpid(pids[i], &child_status, WUNTRACED);
+      if (result != pids[i]) continue;
+      if (WIFSTOPPED(child_status)) {
+        any_stopped = true;
+      } else {
+        child_done[i] = true;
+        children_left--;
+        if (pids[i] == pids.back()) {
+          if (WIFEXITED(child_status)) status = WEXITSTATUS(child_status);
+          else if (WIFSIGNALED(child_status)) status = 128 + WTERMSIG(child_status);
         }
+      }
+    }
+    stopped = any_stopped;
+  };
 
-        ssize_t r = read(fds[k].fd, buf, sizeof(buf));
-        if (r <= 0) {
-          close(fds[k].fd);
-          if (k == 0) {
-            out_open = false;
-          } else {
-            err_open = false;
+  while (out_open || err_open || (xfd >= 0 && children_left > 0)) {
+    if (xfd >= 0) handle_control_key();
+    if (stopped) break;
+
+    pollfd fds[3] = {
+      {out_open ? outpipe[0] : -1, POLLIN, 0},
+      {err_open ? errpipe[0] : -1, POLLIN, 0},
+      {xfd, POLLIN, 0}
+    };
+    nfds_t count = xfd >= 0 ? 3 : 2;
+    if (poll(fds, count, xfd >= 0 ? 100 : -1) < 0) continue;
+
+    for (int k = 0; k < 2; k++) {
+      if (fds[k].fd < 0 || !(fds[k].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+
+      ssize_t r = read(fds[k].fd, buf, sizeof(buf));
+      if (r <= 0) {
+        close(fds[k].fd);
+        if (k == 0) out_open = false;
+        else err_open = false;
+      } else if (k == 0 && use_err) {
+        *capture += string(buf, r);
+      } else {
+        append_text(tab, string(buf, r));
+      }
+    }
+
+    if (xfd >= 0) {
+      for (size_t i = 0; i < pids.size(); i++) {
+        if (child_done[i]) continue;
+        int child_status;
+        pid_t result = waitpid(pids[i], &child_status, WNOHANG);
+        if (result == pids[i]) {
+          child_done[i] = true;
+          children_left--;
+          if (pids[i] == pids.back()) {
+            if (WIFEXITED(child_status)) status = WEXITSTATUS(child_status);
+            else if (WIFSIGNALED(child_status)) status = 128 + WTERMSIG(child_status);
           }
-        } else if (k == 0) {
-          *capture += string(buf, r);
-        } else {
-          append_text(tab, string(buf, r));
         }
       }
     }
   }
 
-  int status = 0;
+  if (stopped) {
+    append_line(tab, "^Z");
+    jobs_add_stopped(tab, pgid, command.empty() ? cmds[0].args[0] : command,
+                     out_open ? outpipe[0] : -1);
+    return 128 + SIGTSTP;
+  }
 
-  for (pid_t pid : pids) {
+  if (out_open) close(outpipe[0]);
+  if (err_open) close(errpipe[0]);
+
+  for (size_t i = 0; i < pids.size(); i++) {
+    if (child_done[i]) continue;
     int w;
-    waitpid(pid, &w, 0);
+    waitpid(pids[i], &w, 0);
 
-    if (pid == pids.back()) {
+    if (pids[i] == pids.back()) {
       if (WIFEXITED(w)) {
         status = WEXITSTATUS(w);
       } else if (WIFSIGNALED(w)) {
@@ -286,5 +342,14 @@ int execute_pipeline(Tab &tab, const vector<Command> &cmds, string *capture) {
   }
 
   flush_pending(tab);
-  return status;
+  return interrupted ? 128 + SIGINT : status;
+}
+
+int execute_pipeline(Tab &tab, const vector<Command> &cmds, string *capture) {
+  return execute_pipeline_impl(tab, cmds, capture, "", true);
+}
+
+int execute_pipeline_command(Tab &tab, const vector<Command> &cmds,
+                             const string &command, bool interactive) {
+  return execute_pipeline_impl(tab, cmds, nullptr, command, interactive);
 }
