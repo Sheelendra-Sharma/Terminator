@@ -5,7 +5,25 @@
 #include <cctype>
 #include <cstdlib>
 #include <glob.h>
+#include <mutex>
 #include <unistd.h>
+
+static recursive_mutex parser_cwd_mutex;
+
+struct ParserCwd {
+  unique_lock<recursive_mutex> lock{parser_cwd_mutex};
+  string original;
+
+  explicit ParserCwd(const Tab &tab) {
+    char cwd[4096];
+    if (getcwd(cwd, sizeof(cwd))) original = cwd;
+    if (!tab.cwd.empty()) chdir(tab.cwd.c_str());
+  }
+
+  ~ParserCwd() {
+    if (!original.empty()) chdir(original.c_str());
+  }
+};
 
 struct Tok {
   string text;
@@ -123,6 +141,7 @@ string capture_output(const string &line, Tab &tab) {
 }
 
 bool parse_line(const string &line, Tab &tab, vector<Command> &cmds, string &error) {
+  ParserCwd cwd(tab);
   vector<Tok> toks;
   Tok cur;
   bool in_tok = false;

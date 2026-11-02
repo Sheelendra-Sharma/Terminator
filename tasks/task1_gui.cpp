@@ -1,10 +1,11 @@
 #include "task1_gui.h"
 
 #include "common.h"
-#include "task5_pipes.h"
+#include "task1_render.h"
+#include "tab_runtime.h"
 
-#include <X11/Xlib.h>
 #include <X11/Xatom.h>
+#include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 
@@ -12,7 +13,8 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
+#include <fcntl.h>
+#include <poll.h>
 #include <unistd.h>
 
 static Display *dpy = nullptr;
@@ -23,23 +25,75 @@ static XFontStruct *font = nullptr;
 static int win_w = 1000, win_h = 650;
 static int char_w = 10, line_h = 20, tab_h = 30;
 
-static unsigned long px_text = 0;
-static unsigned long px_tabtext_active = 0;
-static unsigned long px_tabtext_inactive = 0;
-static unsigned long px_tabbar = 0;
-static unsigned long px_active = 0;
-static unsigned long px_inactive = 0;
-static unsigned long px_tabbg = 0;
-
 static vector<Tab> tabs;
 static int cur = 0;
 static int tab_scroll = 0;
 static bool running = true;
 static vector<XEvent> deferred_events;
-static Atom clipboard_atom, clipboard_property, utf8_atom;
-static string clipboard_text;
-static bool paste_pending = false;
-static bool paste_fallback = false;
+static bool process_mode = false;
+static TerminalRenderer renderer;
+static Atom clipboard_atom, clipboard_property, clipboard_utf8;
+static string copied_text;
+static bool paste_pending = false, paste_fallback = false;
+
+static void copy_text(const string &text) {
+  copied_text = text;
+  XSetSelectionOwner(dpy, clipboard_atom, win, CurrentTime);
+  XSetSelectionOwner(dpy, XA_PRIMARY, win, CurrentTime);
+  XFlush(dpy);
+}
+
+static void paste_text() {
+  paste_pending = true;
+  paste_fallback = false;
+  XConvertSelection(dpy, clipboard_atom, clipboard_utf8, clipboard_property, win, CurrentTime);
+  XFlush(dpy);
+}
+
+static void serve_selection(const XSelectionRequestEvent &request) {
+  XSelectionEvent reply{};
+  reply.type = SelectionNotify;
+  reply.display = dpy;
+  reply.requestor = request.requestor;
+  reply.selection = request.selection;
+  reply.target = request.target;
+  reply.time = request.time;
+  reply.property = request.property == None ? request.target : request.property;
+  if (request.target == XA_STRING || request.target == clipboard_utf8)
+    XChangeProperty(dpy, request.requestor, reply.property, request.target, 8,
+                    PropModeReplace, (const unsigned char *)copied_text.data(), copied_text.size());
+  else if (request.target == XInternAtom(dpy, "TARGETS", False)) {
+    Atom targets[] = {XInternAtom(dpy, "TARGETS", False), clipboard_utf8, XA_STRING};
+    XChangeProperty(dpy, request.requestor, reply.property, XA_ATOM, 32,
+                    PropModeReplace, (unsigned char *)targets, 3);
+  } else reply.property = None;
+  XSendEvent(dpy, request.requestor, False, 0, (XEvent *)&reply);
+}
+
+static bool receive_paste(const XSelectionEvent &event, Tab &tab) {
+  if (!paste_pending || event.selection != clipboard_atom) return false;
+  if (event.property == None) {
+    if (!paste_fallback) {
+      paste_fallback = true;
+      XConvertSelection(dpy, clipboard_atom, XA_STRING, clipboard_property, win, CurrentTime);
+      XFlush(dpy);
+    } else paste_pending = false;
+    return false;
+  }
+  paste_pending = false;
+  Atom type;
+  int format;
+  unsigned long count, remaining;
+  unsigned char *data = nullptr;
+  if (XGetWindowProperty(dpy, win, clipboard_property, 0, 4096, True, AnyPropertyType,
+                         &type, &format, &count, &remaining, &data) != Success || !data || format != 8)
+    return false;
+  tab.cursor = max(0, min(tab.cursor, (int)tab.input.size()));
+  for (unsigned long i = 0; i < count; i++)
+    if (data[i] >= 32 && data[i] < 127) tab.input.insert(tab.cursor++, 1, (char)data[i]);
+  XFree(data);
+  return true;
+}
 
 static unsigned long alloc_hex(int screen, const char *hex) {
   XColor col;
@@ -49,147 +103,12 @@ static unsigned long alloc_hex(int screen, const char *hex) {
   return WhitePixel(dpy, screen);
 }
 
-static string tab_label(int i) {
-  return " " + to_string(i + 1) + ": " + short_cwd(tabs[i].cwd) + " ";
-}
-
-static int tab_width(const string &label) {
-  return (int)label.size() * char_w + 12;
-}
-
-static int tab_at_x(int mouse_x) {
-  int x = 6 - tab_scroll;
-  for (size_t i = 0; i < tabs.size(); i++) {
-    int width = tab_width(tab_label((int)i));
-    if (mouse_x >= x && mouse_x < x + width) return (int)i;
-    x += width + 4;
-  }
-  return -1;
-}
-
-static bool plus_at_x(int mouse_x) {
-  int x = 6 - tab_scroll;
-  for (size_t i = 0; i < tabs.size(); i++) {
-    x += tab_width(tab_label((int)i)) + 4;
-  }
-  int width = 3 * char_w + 12;
-  return mouse_x >= x && mouse_x < x + width;
-}
-
-static int tab_strip_width() {
-  int width = 6;
-  for (size_t i = 0; i < tabs.size(); i++) {
-    width += tab_width(tab_label((int)i)) + 4;
-  }
-  width += (int)strlen(" + ") * char_w + 12;
-  return width;
-}
-
-static int max_tab_scroll() {
-  return max(0, tab_strip_width() - win_w);
-}
-
-static void clamp_tab_scroll() {
-  tab_scroll = max(0, min(tab_scroll, max_tab_scroll()));
-}
-
-static void keep_tab_visible(int index) {
-  int left = 6;
-  for (int i = 0; i < index; i++) left += tab_width(tab_label(i)) + 4;
-  int right = left + tab_width(tab_label(index));
-  if (left < tab_scroll) tab_scroll = left;
-  else if (right - tab_scroll > win_w) tab_scroll = right - win_w;
-  clamp_tab_scroll();
-}
-
-static void redraw() {
-  if (!dpy) return;
-
-  Tab &tab = tabs[cur];
-  clamp_tab_scroll();
-
-  XSetForeground(dpy, gc, px_tabbg);
-  XFillRectangle(dpy, win, gc, 0, tab_h, win_w, win_h - tab_h);
-
-  XSetForeground(dpy, gc, px_tabbar);
-  XFillRectangle(dpy, win, gc, 0, 0, win_w, tab_h);
-
-  int ascent = font ? font->ascent : line_h - 4;
-  int x = 6 - tab_scroll;
-  for (size_t i = 0; i < tabs.size(); i++) {
-    string label = tab_label(i);
-    int w = tab_width(label);
-
-    XSetForeground(dpy, gc, (int)i == cur ? px_active : px_inactive);
-    XFillRectangle(dpy, win, gc, x, 4, w, tab_h - 8);
-    XSetForeground(dpy, gc, (int)i == cur ? px_tabtext_active : px_tabtext_inactive);
-    XDrawString(dpy, win, gc, x + 6, tab_h / 2 + ascent / 2, label.c_str(), label.size());
-
-    x += w + 4;
-  }
-
-  const char *plus = " + ";
-  int pw = (int)strlen(plus) * char_w + 12;
-  XSetForeground(dpy, gc, px_inactive);
-  XFillRectangle(dpy, win, gc, x, 4, pw, tab_h - 8);
-  XSetForeground(dpy, gc, px_tabtext_inactive);
-  XDrawString(dpy, win, gc, x + 6, tab_h / 2 + ascent / 2, plus, strlen(plus));
-
-  int visible = (win_h - tab_h) / line_h;
-  if (visible < 1) visible = 1;
-
-  int total = (int)tab.lines.size() + 1;
-  int max_scroll = total > visible ? total - visible : 0;
-  if (tab.scroll > max_scroll) tab.scroll = max_scroll;
-  if (tab.scroll < 0) tab.scroll = 0;
-
-  int start = total - visible - tab.scroll;
-  if (start < 0) start = 0;
-
-  int max_chars = win_w / char_w;
-  XSetForeground(dpy, gc, px_text);
-
-  for (int row = 0; row < visible; row++) {
-    int idx = start + row;
-    int y = tab_h + (row + 1) * line_h - 4;
-
-    if (idx < (int)tab.lines.size()) {
-      string s = tab.lines[idx].text;
-      if ((int)s.size() > max_chars) s = s.substr(0, max_chars);
-      XDrawString(dpy, win, gc, 4, y, s.c_str(), s.size());
-    } else if (idx == (int)tab.lines.size()) {
-      string prompt = tab.searching_history ? "Enter search term: "
-                      : tab.multi.empty() ? prompt_for(tab) : "> ";
-      string text = prompt + tab.input;
-      if ((int)text.size() > max_chars) text = text.substr(0, max_chars);
-      XDrawString(dpy, win, gc, 4, y, text.c_str(), text.size());
-
-      if (tab.cursor > (int)tab.input.size()) tab.cursor = (int)tab.input.size();
-      if (tab.cursor < 0) tab.cursor = 0;
-
-      int cx = 4 + (int)(prompt.size() + tab.cursor) * char_w;
-      if (cx + char_w <= win_w) {
-        int fa = font ? font->ascent : line_h - 4;
-        int fd = font ? (font->ascent + font->descent) : line_h;
-        XFillRectangle(dpy, win, gc, cx, y - fa, char_w, fd);
-        if (tab.cursor < (int)tab.input.size()) {
-          XSetForeground(dpy, gc, px_tabbg);
-          char ch = tab.input[tab.cursor];
-          XDrawString(dpy, win, gc, cx, y, &ch, 1);
-          XSetForeground(dpy, gc, px_text);
-        }
-      }
-    }
-  }
-
-  XFlush(dpy);
-}
+static void redraw() { renderer.draw(tabs, cur, tab_scroll); }
 
 static void switch_tab(int i) {
   if (i < 0 || i >= (int)tabs.size()) return;
   cur = i;
-  keep_tab_visible(cur);
-  if (!tabs[cur].cwd.empty()) chdir(tabs[cur].cwd.c_str());
+  renderer.keep_tab_visible(cur, tabs, tab_scroll);
 }
 
 static void new_tab() {
@@ -197,14 +116,15 @@ static void new_tab() {
   const char *home = getenv("HOME");
   t.cwd = home ? home : "/";
   tabs.push_back(t);
+  tab_runtime_add(t);
   switch_tab((int)tabs.size() - 1);
 }
 
 static void close_tab() {
   if (tabs.size() <= 1) { running = false; return; }
+  tab_runtime_remove(cur);
   tabs.erase(tabs.begin() + cur);
   if (cur >= (int)tabs.size()) cur = tabs.size() - 1;
-  if (!tabs[cur].cwd.empty()) chdir(tabs[cur].cwd.c_str());
 }
 
 static bool is_ctrl(bool ctrl, KeySym sym, char c) {
@@ -216,23 +136,35 @@ static bool next_event(XEvent &event) {
   if (!deferred_events.empty()) {
     event = deferred_events.front();
     deferred_events.erase(deferred_events.begin());
-  } else {
-    XNextEvent(dpy, &event);
+    return true;
   }
-  return true;
+  for (;;) {
+    if (tab_runtime_collect(tabs)) redraw();
+    if (tabs[cur].exit_requested) return true;
+    if (XPending(dpy)) {
+      XNextEvent(dpy, &event);
+      return true;
+    }
+    vector<pollfd> fds;
+    fds.push_back({ConnectionNumber(dpy), POLLIN, 0});
+    for (int fd : tab_runtime_process_fds()) fds.push_back({fd, POLLIN, 0});
+    poll(fds.data(), fds.size(), 100);
+  }
 }
 
 int gui_event_fd() {
-  return dpy ? ConnectionNumber(dpy) : -1;
+  int worker_fd = tab_worker_event_fd();
+  return worker_fd >= 0 ? worker_fd : (dpy ? ConnectionNumber(dpy) : -1);
 }
 
 int gui_poll_job_control() {
+  int signal = 0;
+  if (tab_worker_poll_control(signal)) return signal;
   if (!dpy) return 0;
 
   while (XPending(dpy)) {
     XEvent event;
     if (!XCheckTypedWindowEvent(dpy, win, KeyPress, &event)) break;
-
     KeySym key = XLookupKeysym(&event.xkey, 0);
     bool ctrl = event.xkey.state & ControlMask;
     bool shift = event.xkey.state & ShiftMask;
@@ -243,78 +175,18 @@ int gui_poll_job_control() {
   return 0;
 }
 
-static void copy_input_to_clipboard() {
-  clipboard_text = tabs[cur].input;
-  XSetSelectionOwner(dpy, clipboard_atom, win, CurrentTime);
-  XSetSelectionOwner(dpy, XA_PRIMARY, win, CurrentTime);
-}
-
-static void paste_from_clipboard() {
-  paste_pending = true;
-  paste_fallback = false;
-  XConvertSelection(dpy, clipboard_atom, utf8_atom, clipboard_property,
-                    win, CurrentTime);
-}
-
-static void handle_selection_request(const XSelectionRequestEvent &request) {
-  XSelectionEvent reply{};
-  reply.type = SelectionNotify;
-  reply.display = request.display;
-  reply.requestor = request.requestor;
-  reply.selection = request.selection;
-  reply.target = request.target;
-  reply.time = request.time;
-  reply.property = request.property == None ? request.target : request.property;
-
-  if (request.target == XA_STRING || request.target == utf8_atom) {
-    XChangeProperty(dpy, request.requestor, reply.property, request.target,
-                    8, PropModeReplace,
-                    (const unsigned char *)clipboard_text.data(), clipboard_text.size());
-  } else if (request.target == XInternAtom(dpy, "TARGETS", False)) {
-    Atom targets[] = {XInternAtom(dpy, "TARGETS", False), utf8_atom, XA_STRING};
-    XChangeProperty(dpy, request.requestor, reply.property, XA_ATOM,
-                    32, PropModeReplace, (unsigned char *)targets, 3);
-  } else {
-    reply.property = None;
-  }
-
-  XSendEvent(dpy, request.requestor, False, 0, (XEvent *)&reply);
-}
-
-static void handle_selection_notify(const XSelectionEvent &event) {
-  if (!paste_pending || event.selection != clipboard_atom) return;
-  if (event.property == None) {
-    if (!paste_fallback) {
-      paste_fallback = true;
-      XConvertSelection(dpy, clipboard_atom, XA_STRING, clipboard_property,
-                        win, CurrentTime);
-    } else {
-      paste_pending = false;
-    }
-    return;
-  }
-  paste_pending = false;
-
-  Atom actual_type;
-  int format;
-  unsigned long count, remaining;
-  unsigned char *data = nullptr;
-  if (XGetWindowProperty(dpy, win, clipboard_property, 0, 4096, True,
-                         AnyPropertyType, &actual_type, &format,
-                         &count, &remaining, &data) != Success || !data) return;
-
-  Tab &tab = tabs[cur];
-  tab.cursor = max(0, min(tab.cursor, (int)tab.input.size()));
-  for (unsigned long i = 0; i < count; i++) {
-    unsigned char c = data[i];
-    if (c >= 32 && c < 127) tab.input.insert(tab.cursor++, 1, (char)c);
-  }
-  XFree(data);
-  redraw();
+void gui_close_worker_fds_in_child() {
+  dpy = nullptr;
+  tab_worker_close_fds_in_child();
 }
 
 static void handle_enter() {
   Tab &tab = tabs[cur];
+  if (tab_runtime_busy(cur)) {
+    append_line(tab, "terminator: wait for this tab's command to finish");
+    redraw();
+    return;
+  }
 
   if (tab.searching_history) {
     string term = tab.input;
@@ -339,6 +211,7 @@ static void handle_enter() {
   append_line(tab, disp + tab.input, LINE_COMMAND);
 
   string candidate = tab.multi + tab.input;
+  bool clear_command = candidate == "clear";
   tab.input.clear();
   tab.cursor = 0;
   tab.hist_idx = -1;
@@ -355,16 +228,18 @@ static void handle_enter() {
   }
 
   tab.multi.clear();
-  run_line(tab, candidate);
-
-  bool should_close = tab.exit_requested;
+  if (clear_command) {
+    tab.lines.clear();
+    tab.pending.clear();
+  }
   tab.scroll = 0;
-
-  if (should_close) close_tab();
-  else              redraw();
+  if (process_mode) add_history(candidate);
+  tab_runtime_submit(cur, candidate);
+  redraw();
 }
 
 int gui_run(bool process_mode) {
+  ::process_mode = process_mode;
   load_history();
 
   Tab first;
@@ -372,25 +247,26 @@ int gui_run(bool process_mode) {
   first.cwd = getcwd(buf, sizeof(buf)) ? buf : "/";
   tabs.push_back(first);
 
-  if (process_mode) {
-    append_line(tabs[0], "Running in process-isolation mode: each command runs in its own forked process.");
-  }
-
   dpy = XOpenDisplay(nullptr);
   if (!dpy) {
     fprintf(stderr, "terminator: cannot open X display (set DISPLAY or run under Xvfb)\n");
+    cleanup_shared_history();
     return 1;
   }
 
   int screen = DefaultScreen(dpy);
+  int x_fd = ConnectionNumber(dpy);
+  fcntl(x_fd, F_SETFD, fcntl(x_fd, F_GETFD) | FD_CLOEXEC);
+  tab_runtime_init(process_mode, x_fd);
   win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen),
                             0, 0, win_w, win_h, 0,
                             BlackPixel(dpy, screen), BlackPixel(dpy, screen));
 
-  XStoreName(dpy, win, "Terminator");
+  XStoreName(dpy, win, process_mode ? "Terminator - Process Mode"
+                                   : "Terminator - Thread Mode");
   clipboard_atom = XInternAtom(dpy, "CLIPBOARD", False);
   clipboard_property = XInternAtom(dpy, "TERMINATOR_CLIPBOARD", False);
-  utf8_atom = XInternAtom(dpy, "UTF8_STRING", False);
+  clipboard_utf8 = XInternAtom(dpy, "UTF8_STRING", False);
 
   Atom wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
   XSetWMProtocols(dpy, win, &wm_delete, 1);
@@ -411,32 +287,47 @@ int gui_run(bool process_mode) {
     line_h = font->ascent + font->descent + 3;
   }
 
-  px_text     = WhitePixel(dpy, screen);
-  px_tabtext_active = alloc_hex(screen, "#000000");
-  px_tabtext_inactive = alloc_hex(screen, "#FFFFFF");
-  px_tabbg    = alloc_hex(screen, "#000000");
-  px_tabbar   = alloc_hex(screen, "#000000");
-  px_active   = alloc_hex(screen, "#FFFFFF");
-  px_inactive = alloc_hex(screen, "#000000");
+  XSizeHints size_hints{};
+  size_hints.flags = PMinSize;
+  string minimum_prompt = prompt_for(tabs[0]);
+  size_hints.min_width = max(240, (int)minimum_prompt.size() * char_w + 16);
+  size_hints.min_height = tab_h + line_h * 2;
+  XSetWMNormalHints(dpy, win, &size_hints);
+
+  TerminalColors colors{
+      WhitePixel(dpy, screen), alloc_hex(screen, "#000000"),
+      alloc_hex(screen, "#FFFFFF"), alloc_hex(screen, "#000000"),
+      alloc_hex(screen, "#FFFFFF"), alloc_hex(screen, "#000000"),
+      alloc_hex(screen, "#000000")};
+
+  renderer.configure(dpy, win, gc, font, win_w, win_h, char_w, line_h, tab_h,
+                     colors);
 
   XMapWindow(dpy, win);
+  tab_runtime_add(tabs[0]);
 
   XEvent ev;
   while (running) {
     next_event(ev);
+    if (tabs[cur].exit_requested) {
+      close_tab();
+      if (running) redraw();
+      continue;
+    }
 
     if (ev.type == Expose) {
       redraw();
     } else if (ev.type == ConfigureNotify) {
       win_w = ev.xconfigure.width;
       win_h = ev.xconfigure.height;
+      renderer.resize(win_w, win_h);
       redraw();
     } else if (ev.type == ClientMessage) {
       if ((Atom)ev.xclient.data.l[0] == wm_delete) running = false;
     } else if (ev.type == SelectionRequest) {
-      handle_selection_request(ev.xselectionrequest);
+      serve_selection(ev.xselectionrequest);
     } else if (ev.type == SelectionNotify) {
-      handle_selection_notify(ev.xselection);
+      if (receive_paste(ev.xselection, tabs[cur])) redraw();
 
     } else if (ev.type == ButtonPress) {
       Tab &tab = tabs[cur];
@@ -453,7 +344,7 @@ int gui_run(bool process_mode) {
       if (ev.xbutton.button == Button5) {
         if (ev.xbutton.y < tab_h) {
           tab_scroll += 3 * char_w;
-          clamp_tab_scroll();
+          renderer.clamp_tab_scroll(tabs, tab_scroll);
         } else {
           tab.scroll = max(0, tab.scroll - 3);
         }
@@ -463,12 +354,12 @@ int gui_run(bool process_mode) {
 
       if (ev.xbutton.y < tab_h) {
         if (ev.xbutton.button == Button1) {
-          int hit = tab_at_x(ev.xbutton.x);
+          int hit = renderer.tab_at_x(ev.xbutton.x, tabs, tab_scroll);
           if (hit >= 0) switch_tab(hit);
-          else if (plus_at_x(ev.xbutton.x)) new_tab();
+          else if (renderer.plus_at_x(ev.xbutton.x, tabs, tab_scroll)) new_tab();
           redraw();
         } else if (ev.xbutton.button == Button2) {
-          int hit = tab_at_x(ev.xbutton.x);
+          int hit = renderer.tab_at_x(ev.xbutton.x, tabs, tab_scroll);
           if (hit >= 0) {
             switch_tab(hit);
             close_tab();
@@ -487,11 +378,18 @@ int gui_run(bool process_mode) {
       bool shift = ev.xkey.state & ShiftMask;
 
       if (ctrl && shift && (keysym == XK_c || keysym == XK_C)) {
-        copy_input_to_clipboard();
+        copy_text(tab.input);
         continue;
       }
       if (ctrl && shift && (keysym == XK_v || keysym == XK_V)) {
-        paste_from_clipboard();
+        paste_text();
+        continue;
+      }
+
+      if (ctrl && !shift && (keysym == XK_c || keysym == XK_C ||
+                             keysym == XK_z || keysym == XK_Z) && tab_runtime_busy(cur)) {
+        int signal = (keysym == XK_c || keysym == XK_C) ? SIGINT : SIGTSTP;
+        tab_runtime_signal(cur, signal);
         continue;
       }
 
@@ -541,13 +439,14 @@ int gui_run(bool process_mode) {
         redraw();
         continue;
       }
-      if (is_ctrl(ctrl, keysym, 'q') || is_ctrl(ctrl, keysym, 'w')) {
+      if (is_ctrl(ctrl, keysym, 'q')) {
         close_tab();
         redraw();
         continue;
       }
 
       if (keysym == XK_Up) {
+        load_history();
         lock_guard<mutex> lock(g_history_mutex);
         if (!g_history.empty()) {
           if (tab.hist_idx == -1) {
@@ -566,6 +465,7 @@ int gui_run(bool process_mode) {
 
       if (keysym == XK_Down) {
         if (tab.hist_idx != -1) {
+          load_history();
           lock_guard<mutex> lock(g_history_mutex);
           tab.hist_idx++;
           if (tab.hist_idx >= (int)g_history.size()) {
@@ -651,6 +551,21 @@ int gui_run(bool process_mode) {
         redraw();
         continue;
       }
+      if (is_ctrl(ctrl, keysym, 'w')) {
+        int start = tab.cursor;
+        while (start > 0 && tab.input[start - 1] == ' ') start--;
+        while (start > 0 && tab.input[start - 1] != ' ') start--;
+        tab.input.erase(start, tab.cursor - start);
+        tab.cursor = start;
+        redraw();
+        continue;
+      }
+      if (is_ctrl(ctrl, keysym, 'd')) {
+        if (tab.input.empty()) close_tab();
+        else if (tab.cursor < (int)tab.input.size()) tab.input.erase(tab.cursor, 1);
+        redraw();
+        continue;
+      }
 
       if (keysym == XK_Tab) continue;
 
@@ -666,6 +581,8 @@ int gui_run(bool process_mode) {
     }
   }
 
+  tab_runtime_shutdown();
   XCloseDisplay(dpy);
+  cleanup_shared_history();
   return 0;
 }

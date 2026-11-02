@@ -1,10 +1,12 @@
 #include "task2_commands.h"
 #include "task3_parser.h"
+#include "task4_redirection.h"
 #include "task5_pipes.h"
 #include "task6_multiwatch.h"
 #include "task8_jobs.h"
 
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <unistd.h>
 
@@ -14,21 +16,21 @@ bool is_builtin(const string &name) {
       || name == "clear";
 }
 
-int run_builtin(Tab &tab, const Command &cmd, string &out) {
+int run_builtin(Tab &tab, const Command &cmd, string &out, bool interactive) {
   string name = cmd.args[0];
 
   if (name == "cd") {
     string dir = cmd.args.size() > 1 ? cmd.args[1] : (getenv("HOME") ? getenv("HOME") : "/");
 
-    if (chdir(dir.c_str()) != 0) {
+    filesystem::path target(dir);
+    if (target.is_relative()) target = filesystem::path(tab.cwd) / target;
+    target = target.lexically_normal();
+    error_code ec;
+    if (!filesystem::is_directory(target, ec)) {
       out = "terminator: cd: " + dir + ": No such file or directory\n";
       return 1;
     }
-
-    char buf[4096];
-    if (getcwd(buf, sizeof(buf))) {
-      tab.cwd = buf;
-    }
+    tab.cwd = target.string();
     return 0;
   }
 
@@ -38,6 +40,7 @@ int run_builtin(Tab &tab, const Command &cmd, string &out) {
   }
 
   if (name == "history") {
+    load_history();
     lock_guard<mutex> lock(g_history_mutex);
 
     size_t start = g_history.size() > 1000 ? g_history.size() - 1000 : 0;
@@ -53,7 +56,7 @@ int run_builtin(Tab &tab, const Command &cmd, string &out) {
       return 1;
     }
 
-    ifstream f(cmd.args[1]);
+    ifstream f(resolve_path(tab.cwd, cmd.args[1]));
     if (!f) {
       out = "terminator: source: " + cmd.args[1] + ": No such file or directory\n";
       return 1;
@@ -69,7 +72,7 @@ int run_builtin(Tab &tab, const Command &cmd, string &out) {
         continue;
       }
 
-      status = run_line(tab, line);
+      status = run_line(tab, line, interactive, true);
 
       if (tab.exit_requested) {
         break;
@@ -80,7 +83,7 @@ int run_builtin(Tab &tab, const Command &cmd, string &out) {
   }
 
   if (name == "multiWatch") {
-    return run_multiwatch(tab, cmd.args);
+    return run_multiwatch(tab, cmd.args, interactive);
   }
 
   if (name == "clear") {
@@ -96,7 +99,7 @@ int run_builtin(Tab &tab, const Command &cmd, string &out) {
 
   if (name == "fg") {
     int id = cmd.args.size() > 1 ? stoi(cmd.args[1].substr(cmd.args[1][0] == '%')) : 1;
-    return jobs_fg(tab, id);
+    return jobs_fg(tab, id, interactive);
   }
 
   if (name == "bg") {

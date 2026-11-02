@@ -21,6 +21,7 @@ bool hotkey_end(EditState &e) {
 }
 
 bool hotkey_up(EditState &e) {
+    load_history();
     lock_guard<mutex> lock(g_history_mutex);
     if (g_history.empty()) return true;
 
@@ -39,6 +40,7 @@ bool hotkey_up(EditState &e) {
 bool hotkey_down(EditState &e) {
     if (e.hist_idx == -1) return true;
 
+    load_history();
     lock_guard<mutex> lock(g_history_mutex);
     e.hist_idx++;
 

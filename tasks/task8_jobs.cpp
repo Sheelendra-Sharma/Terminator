@@ -11,8 +11,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-vector<Job> g_jobs;
-mutex       g_jobs_mutex;
+thread_local vector<Job> g_jobs;
+thread_local mutex g_jobs_mutex;
 
 static int next_job_id() {
     int id = 1;
@@ -62,6 +62,25 @@ void jobs_reap(Tab &tab) {
         g_jobs.end());
 }
 
+void jobs_cleanup() {
+    vector<pid_t> pids;
+    {
+        lock_guard<mutex> lock(g_jobs_mutex);
+        for (const Job &job : g_jobs) {
+            pids.push_back(job.pid);
+            if (job.output_fd >= 0) close(job.output_fd);
+        }
+        g_jobs.clear();
+    }
+    for (pid_t pid : pids) {
+        kill(-pid, SIGCONT);
+        kill(-pid, SIGTERM);
+    }
+    for (pid_t pid : pids) {
+        while (waitpid(-pid, nullptr, 0) > 0) {}
+    }
+}
+
 string jobs_list() {
     lock_guard<mutex> lock(g_jobs_mutex);
     string out;
@@ -74,7 +93,7 @@ string jobs_list() {
     return out;
 }
 
-int jobs_fg(Tab &tab, int job_id) {
+int jobs_fg(Tab &tab, int job_id, bool interactive) {
     Job job{};
     bool found = false;
 
@@ -101,7 +120,7 @@ int jobs_fg(Tab &tab, int job_id) {
 
     int status = 0;
     bool interrupted = false;
-    int xfd = gui_event_fd();
+    int xfd = interactive ? gui_event_fd() : -1;
     int output_fd = job.output_fd;
     while (true) {
         if (xfd >= 0 || output_fd >= 0) {
@@ -119,7 +138,7 @@ int jobs_fg(Tab &tab, int job_id) {
                     output_fd = -1;
                 }
             }
-            int signal = gui_poll_job_control();
+            int signal = interactive ? gui_poll_job_control() : 0;
             if (signal == SIGINT || signal == SIGTSTP) {
                 kill(-job.pid, signal);
                 if (signal == SIGINT) append_line(tab, "^C");
@@ -218,6 +237,7 @@ int run_background(Tab &tab, const string &raw_cmd) {
 
     pid_t pid = fork();
     if (pid == 0) {
+        gui_close_worker_fds_in_child();
         setpgid(0, 0);
         int status = execute_pipeline_command(tab, cmds, raw_cmd, false);
         _exit(status);

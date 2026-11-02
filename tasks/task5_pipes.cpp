@@ -1,11 +1,9 @@
 #include "task5_pipes.h"
-
 #include "task2_commands.h"
 #include "task3_parser.h"
 #include "task4_redirection.h"
 #include "task8_jobs.h"
 #include "task1_gui.h"
-
 #include <array>
 #include <csignal>
 #include <fcntl.h>
@@ -13,7 +11,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-int run_line(Tab &tab, const string &line) {
+int run_line(Tab &tab, const string &line, bool interactive, bool record_history) {
   bool blank = true;
 
   for (char c : line) {
@@ -26,11 +24,7 @@ int run_line(Tab &tab, const string &line) {
     return tab.last_status;
   }
 
-  add_history(line);
-
-  if (!tab.cwd.empty()) {
-    chdir(tab.cwd.c_str());
-  }
+  if (record_history) add_history(line);
 
   // Check for background execution (trailing unquoted '&').
   string stripped;
@@ -50,13 +44,8 @@ int run_line(Tab &tab, const string &line) {
     return 1;
   }
 
-  int status = execute_pipeline_command(tab, cmds, line);
+  int status = execute_pipeline_command(tab, cmds, line, interactive);
   tab.last_status = status;
-
-  char buf[4096];
-  if (getcwd(buf, sizeof(buf))) {
-    tab.cwd = buf;
-  }
 
   jobs_reap(tab);
   return status;
@@ -72,13 +61,13 @@ static int execute_pipeline_impl(Tab &tab, const vector<Command> &cmds,
   if (cmds.size() == 1 && cmds[0].args.empty()) {
     string error;
 
-    if (!check_input_file(cmds[0], error)) {
+    if (!check_input_file(cmds[0], error, tab.cwd)) {
       append_line(tab, error);
       return 1;
     }
 
     if (!cmds[0].out_file.empty()) {
-      int fd = open_output_for(cmds[0]);
+      int fd = open_output_for(cmds[0], tab.cwd);
       if (fd >= 0) {
         close(fd);
       }
@@ -90,15 +79,15 @@ static int execute_pipeline_impl(Tab &tab, const vector<Command> &cmds,
   if (cmds.size() == 1 && is_builtin(cmds[0].args[0])) {
     string error, out;
 
-    if (!check_input_file(cmds[0], error)) {
+    if (!check_input_file(cmds[0], error, tab.cwd)) {
       append_line(tab, error);
       return 1;
     }
 
-    int status = run_builtin(tab, cmds[0], out);
+    int status = run_builtin(tab, cmds[0], out, interactive);
 
     if (!cmds[0].out_file.empty()) {
-      int fd = open_output_for(cmds[0]);
+      int fd = open_output_for(cmds[0], tab.cwd);
       if (fd >= 0) {
         if (!out.empty()) {
           write(fd, out.c_str(), out.size());
@@ -117,7 +106,7 @@ static int execute_pipeline_impl(Tab &tab, const vector<Command> &cmds,
 
   for (auto &cmd : cmds) {
     string error;
-    if (!check_input_file(cmd, error)) {
+    if (!check_input_file(cmd, error, tab.cwd)) {
       append_line(tab, error);
       return 1;
     }
@@ -153,10 +142,11 @@ static int execute_pipeline_impl(Tab &tab, const vector<Command> &cmds,
 
     if (pid == 0) {
       if (interactive) setpgid(0, pgid ? pgid : 0);
+      if (!tab.cwd.empty()) chdir(tab.cwd.c_str());
       if (i > 0) {
         dup2(pipes[i - 1][0], 0);
       } else if (!cmds[i].in_file.empty()) {
-        int fd = open_input_file(cmds[i].in_file);
+        int fd = open_input_file(cmds[i].in_file, tab.cwd);
         if (fd >= 0) {
           dup2(fd, 0);
           close(fd);
@@ -172,7 +162,7 @@ static int execute_pipeline_impl(Tab &tab, const vector<Command> &cmds,
       if (i + 1 < n) {
         dup2(pipes[i][1], 1);
       } else if (!cmds[i].out_file.empty()) {
-        int fd = open_output_for(cmds[i]);
+        int fd = open_output_for(cmds[i], tab.cwd);
         if (fd >= 0) {
           dup2(fd, 1);
           close(fd);

@@ -1,14 +1,46 @@
 #include "common.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <fstream>
+#include <semaphore.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <pwd.h>
 #include <unistd.h>
 
 vector<string> g_history;
 mutex g_history_mutex;
+
+static const size_t HISTORY_LIMIT = 10000;
+static const size_t HISTORY_LINE_SIZE = 4096;
+struct SharedHistory {
+  sem_t semaphore;
+  uint32_t count;
+  char entries[HISTORY_LIMIT][HISTORY_LINE_SIZE];
+};
+static SharedHistory *shared_history = nullptr;
+static string shared_history_name;
+
+static void copy_history_from_shared() {
+  g_history.clear();
+  for (uint32_t i = 0; i < shared_history->count; i++)
+    g_history.emplace_back(shared_history->entries[i]);
+}
+
+static void copy_history_to_shared() {
+  size_t count = min(g_history.size(), HISTORY_LIMIT);
+  size_t start = g_history.size() - count;
+  for (size_t i = 0; i < count; i++) {
+    strncpy(shared_history->entries[i], g_history[start + i].c_str(), HISTORY_LINE_SIZE - 1);
+    shared_history->entries[i][HISTORY_LINE_SIZE - 1] = '\0';
+  }
+  shared_history->count = (uint32_t)count;
+}
 
 void flush_pending(Tab &tab) {
   if (tab.pending.empty()) {
@@ -50,45 +82,85 @@ void add_history(const string &line) {
 
   if (line.empty()) return;
 
+  if (shared_history) {
+    sem_wait(&shared_history->semaphore);
+    copy_history_from_shared();
+  }
   g_history.push_back(line);
-  while (g_history.size() > 10000) {
+  while (g_history.size() > HISTORY_LIMIT) {
     g_history.erase(g_history.begin());
   }
+  if (shared_history) copy_history_to_shared();
 
   const char *home = getenv("HOME");
-  if (!home) return;
-
-  ofstream f(string(home) + "/.terminator_history", ios::trunc);
-  for (const string &entry : g_history) f << entry << '\n';
+  if (home) {
+    ofstream f(string(home) + "/.terminator_history", ios::trunc);
+    for (const string &entry : g_history) f << entry << '\n';
+  }
+  if (shared_history) sem_post(&shared_history->semaphore);
 }
 
 void load_history() {
-  const char *home = getenv("HOME");
-  if (!home) {
+  if (shared_history) {
+    lock_guard<mutex> lock(g_history_mutex);
+    sem_wait(&shared_history->semaphore);
+    copy_history_from_shared();
+    sem_post(&shared_history->semaphore);
     return;
   }
 
-  ifstream f(string(home) + "/.terminator_history");
-  bool loaded = f.good();
-  deque<string> recent;
-  string line;
+  shared_history_name = "/terminator_history_" + to_string(getpid());
+  int shm_fd = shm_open(shared_history_name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+  if (shm_fd >= 0) {
+    if (ftruncate(shm_fd, sizeof(SharedHistory)) == 0) {
+      void *memory = mmap(nullptr, sizeof(SharedHistory), PROT_READ | PROT_WRITE,
+                          MAP_SHARED, shm_fd, 0);
+      if (memory != MAP_FAILED) {
+        shared_history = static_cast<SharedHistory *>(memory);
+        shared_history->count = 0;
+        sem_init(&shared_history->semaphore, 1, 1);
+      }
+    }
+  }
+  if (shm_fd >= 0) close(shm_fd);
 
-  while (getline(f, line)) {
-    if (line.empty()) continue;
-    recent.push_back(line);
-    if (recent.size() > 10000) recent.pop_front();
+  const char *home = getenv("HOME");
+  deque<string> recent;
+  if (home) {
+    ifstream f(string(home) + "/.terminator_history");
+    string line;
+    while (getline(f, line)) {
+      if (line.empty()) continue;
+      recent.push_back(line);
+      if (recent.size() > HISTORY_LIMIT) recent.pop_front();
+    }
   }
 
   lock_guard<mutex> lock(g_history_mutex);
   g_history.assign(recent.begin(), recent.end());
-
-  if (loaded) {
+  if (shared_history) {
+    sem_wait(&shared_history->semaphore);
+    copy_history_to_shared();
+    sem_post(&shared_history->semaphore);
+  }
+  if (home) {
     ofstream trimmed(string(home) + "/.terminator_history", ios::trunc);
     for (const string &entry : g_history) trimmed << entry << '\n';
   }
 }
 
+void cleanup_shared_history() {
+  if (shared_history) {
+    sem_destroy(&shared_history->semaphore);
+    munmap(shared_history, sizeof(SharedHistory));
+    shared_history = nullptr;
+  }
+  if (!shared_history_name.empty()) shm_unlink(shared_history_name.c_str());
+  shared_history_name.clear();
+}
+
 vector<string> search_history(const string &term) {
+  load_history();
   lock_guard<mutex> lock(g_history_mutex);
   if (term.empty()) return {};
 
