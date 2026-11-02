@@ -1,4 +1,6 @@
 #include "task6_multiwatch.h"
+#include "task1_gui.h"
+#include "tab_runtime.h"
 
 #include <csignal>
 #include <ctime>
@@ -19,17 +21,43 @@ static vector<string> parse_watch_cmds(const vector<string> &args) {
     if (s == string::npos || e == string::npos) return out;
     joined = joined.substr(s + 1, e - s - 1);
 
-    size_t i = 0;
-    while (i < joined.size()) {
-        if (joined[i] == '"') {
-            size_t j = joined.find('"', i + 1);
-            if (j == string::npos) break;
-            out.push_back(joined.substr(i + 1, j - i - 1));
-            i = j + 1;
+    string command;
+    char quote = 0;
+    bool escaped = false;
+    auto add_command = [&] {
+        size_t first = command.find_first_not_of(" \t\r\n");
+        size_t last = command.find_last_not_of(" \t\r\n");
+        if (first != string::npos) {
+            string value = command.substr(first, last - first + 1);
+            if (value.size() >= 2 &&
+                ((value.front() == '"' && value.back() == '"') ||
+                 (value.front() == '\'' && value.back() == '\'')))
+                value = value.substr(1, value.size() - 2);
+            out.push_back(value);
+        }
+        command.clear();
+    };
+
+    for (char c : joined) {
+        if (escaped) {
+            command += c;
+            escaped = false;
+        } else if (c == '\\') {
+            command += c;
+            escaped = true;
+        } else if (quote) {
+            command += c;
+            if (c == quote) quote = 0;
+        } else if (c == '"' || c == '\'') {
+            command += c;
+            quote = c;
+        } else if (c == ',') {
+            add_command();
         } else {
-            i++;
+            command += c;
         }
     }
+    add_command();
 
     return out;
 }
@@ -41,16 +69,14 @@ struct WatchJob {
     string buf;
 };
 
-static volatile sig_atomic_t g_mw_stop = 0;
-static void mw_sigint(int) { g_mw_stop = 1; }
-
-static pid_t spawn_cmd(const string &cmd, int &rfd) {
+static pid_t spawn_cmd(const string &cmd, const string &cwd, int &rfd) {
     int p[2];
     if (pipe(p) != 0) return -1;
 
     pid_t pid = fork();
     if (pid == 0) {
         close(p[0]);
+        if (!cwd.empty()) chdir(cwd.c_str());
         dup2(p[1], 1);
         dup2(p[1], 2);
         close(p[1]);
@@ -63,7 +89,7 @@ static pid_t spawn_cmd(const string &cmd, int &rfd) {
     return pid;
 }
 
-int run_multiwatch(Tab &tab, const vector<string> &args) {
+int run_multiwatch(Tab &tab, const vector<string> &args, bool interactive) {
     vector<string> cmds = parse_watch_cmds(args);
 
     if (cmds.empty()) {
@@ -71,24 +97,20 @@ int run_multiwatch(Tab &tab, const vector<string> &args) {
         return 1;
     }
 
-    struct sigaction old_sa, sa{};
-    sa.sa_handler = mw_sigint;
-    sigaction(SIGINT, &sa, &old_sa);
-    g_mw_stop = 0;
-
     int n = (int)cmds.size();
     vector<WatchJob> jobs(n);
     for (int i = 0; i < n; i++) jobs[i].cmd = cmds[i];
 
     vector<time_t> started(n, 0);
 
-    while (!g_mw_stop) {
+    bool stopped = false;
+    while (!stopped) {
         time_t now = time(nullptr);
 
         for (int i = 0; i < n; i++) {
             if (jobs[i].pid == -1 && now - started[i] >= 2) {
                 jobs[i].buf.clear();
-                jobs[i].pid = spawn_cmd(jobs[i].cmd, jobs[i].rfd);
+                jobs[i].pid = spawn_cmd(jobs[i].cmd, tab.cwd, jobs[i].rfd);
                 started[i]  = now;
             }
         }
@@ -102,6 +124,9 @@ int run_multiwatch(Tab &tab, const vector<string> &args) {
             }
         }
 
+        int control_fd = interactive ? gui_event_fd() : -1;
+        if (control_fd >= 0) pfds.push_back({control_fd, POLLIN, 0});
+
         if (pfds.empty()) {
             usleep(50000);
             continue;
@@ -110,7 +135,14 @@ int run_multiwatch(Tab &tab, const vector<string> &args) {
         int ret = poll(pfds.data(), pfds.size(), 200);
         if (ret < 0) break;
 
-        for (size_t k = 0; k < pfds.size(); k++) {
+        if (control_fd >= 0 && pfds.back().fd == control_fd && pfds.back().revents & POLLIN) {
+            int signal = gui_poll_job_control();
+            if (signal == SIGINT || signal == SIGTSTP) stopped = true;
+        }
+        if (stopped) break;
+
+        size_t job_fd_count = idx.size();
+        for (size_t k = 0; k < job_fd_count; k++) {
             if (!(pfds[k].revents & (POLLIN | POLLHUP))) continue;
 
             int i   = idx[k];
@@ -138,6 +170,7 @@ int run_multiwatch(Tab &tab, const vector<string> &args) {
                     append_text(tab, "\n");
                 append_line(tab, sep);
                 flush_pending(tab);
+                tab_runtime_publish(tab);
             }
         }
     }
@@ -150,8 +183,6 @@ int run_multiwatch(Tab &tab, const vector<string> &args) {
         if (j.rfd >= 0) close(j.rfd);
     }
 
-    sigaction(SIGINT, &old_sa, nullptr);
-    g_mw_stop = 0;
     return 0;
 }
 

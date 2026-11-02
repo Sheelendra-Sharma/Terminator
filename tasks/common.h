@@ -46,6 +46,7 @@ void append_line(Tab &tab, const string &line, int kind = LINE_OUTPUT);
 void flush_pending(Tab &tab);
 void add_history(const string &line);
 void load_history();
+void cleanup_shared_history();
 vector<string> search_history(const string &term);
 
 string prompt_for(const Tab &tab);

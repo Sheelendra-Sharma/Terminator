@@ -1,6 +1,6 @@
 # Terminator — Architecture Reference
 
-A minimal X11 terminal emulator written in C++17. Single-threaded; commands run synchronously via `fork`/`execvp`. History is persisted in `~/.terminator_history`.
+A minimal X11 terminal emulator written in C++17. The GUI runs in the main thread; each tab executes in its own thread by default or in a child process with `useProcess=True`. Commands run with `fork`/`execvp`. History is persisted in `~/.terminator_history` and shared between process-mode tabs through shared memory.
 
 ---
 
@@ -8,10 +8,12 @@ A minimal X11 terminal emulator written in C++17. Single-threaded; commands run 
 
 | File | Role |
 |---|---|
-| `main.cpp` | Entry point — parses `--process` flag, calls `gui_run()` |
+| `main.cpp` | Entry point — parses `useProcess=True` and calls `gui_run()` |
 | `tasks/common.h` | Shared types: `Tab`, `Line`, `Command`; function declarations |
 | `tasks/common.cpp` | Text buffering, history I/O, prompt/cwd helpers |
-| `tasks/task1_gui.cpp` | X11 window, event loop, tab bar, drawing |
+| `tasks/task1_gui.cpp` | X11 window, input, and event loop |
+| `tasks/task1_render.cpp` | Tab bar, wrapped output, prompt, and cursor drawing |
+| `tasks/tab_runtime.cpp` | Per-tab threads/processes, IPC, and command result updates |
 | `tasks/task2_commands.cpp` | Built-in command dispatch (`cd`, `exit`, `history`, `source`, `multiWatch`, `jobs`, `fg`, `bg`, `clear`) |
 | `tasks/task3_parser.cpp` | Tokenizer / expander → `vector<Command>` |
 | `tasks/task4_redirection.cpp` | Opens `in_file` / `out_file` with `open(2)` before fork |
@@ -31,9 +33,12 @@ User keystroke (X11 KeyPress)
         ▼
   task1_gui.cpp  ──  handle_enter()
         │
-        ├─ is_builtin()? ──► run_builtin()  [task2_commands.cpp]
+        ▼
+   tab_runtime.cpp  ──  one worker per tab
         │
-        └─ else ──► run_line()  [task5_pipes.cpp]
+        └─► run_line()  [task5_pipes.cpp]
+                        │
+                        ├─► run_builtin()  [task2_commands.cpp]
                         │
                         ├─ parse_line()  [task3_parser.cpp]
                         │       tokenise, expand $VAR / $() / glob / ~
@@ -53,7 +58,7 @@ User keystroke (X11 KeyPress)
                                    Tab.lines[]
                                         │
                                         ▼
-                                    redraw()  [task1_gui.cpp]
+                                    task1_render.cpp
                                   XDrawString → screen
 ```
 
@@ -93,6 +98,10 @@ Shared types and utilities used by every other module.
 
 ### `task1_gui.cpp` — X11 GUI
 Single X11 window with a tab bar at the top and a terminal body below.
+
+The GUI file handles input and X11 events. `task1_render.cpp` draws tabs,
+wrapped output, and the prompt. `tab_runtime.cpp` runs one worker per tab
+and returns command results to the GUI.
 
 **Drawing** (`redraw()`):
 1. Fill body with `#0d1117`, tab bar with `#161b22`.
@@ -199,7 +208,8 @@ Provides cursor movement, line editing, and history navigation helpers for an `E
 
 ### `task8_jobs.cpp` — Background Jobs
 
-Global `g_jobs` table (`vector<Job>`).
+Each tab worker keeps a separate `g_jobs` table (`vector<Job>`); it is
+thread-local in thread mode and process-local in process mode.
 
 | Function | Description |
 |---|---|
@@ -216,11 +226,11 @@ Global `g_jobs` table (`vector<Job>`).
 
 | Decision | Rationale |
 |---|---|
-| Single-threaded GUI | Simplicity; X11 is not thread-safe without locking |
-| Commands block the UI | No async execution — GUI freezes during long-running commands |
+| X11 stays on the GUI thread | Tab workers send command results to the GUI |
+| One worker per tab | Tab command state and jobs stay isolated |
 | `fork`/`execvp` per command | POSIX-native; gives natural process isolation |
 | Per-tab `scroll` field | Each tab remembers its scroll position independently |
 | No pixmap double-buffer | Direct `XFillRectangle` + `XDrawString`; fast enough at this scale |
-| History in `~/.terminator_history` | Persistent across sessions; max 1000 entries in memory |
-| Process mode = informational | True per-tab process isolation not implemented; `fork`-per-command already provides isolation |
+| Shared history | A process-shared semaphore protects history in mapped memory; updates are also saved to disk |
+| Process mode | The GUI stays in the parent; each tab gets a child process and a socket pair for commands and results |
 

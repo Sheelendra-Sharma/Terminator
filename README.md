@@ -74,9 +74,11 @@ make
 ```
 
 `./terminator` runs in thread mode (the default in the specification).
-`./terminator useProcess=True` is accepted, but process mode is not
-implemented yet: the program prints a notice in the first tab and runs
-in thread mode. See Known limitations.
+Each tab has a worker thread. `./terminator useProcess=True` runs the GUI in
+the parent and gives every tab its own child process, connected to the GUI
+with a local socket pair. Commands in either mode still use `fork` and
+`execvp`; history is shared between tabs and protected by a process-shared
+semaphore.
 
 Headless test run:
 
@@ -125,6 +127,10 @@ terminator/
 │   ├── common.cpp
 │   ├── task1_gui.h
 │   ├── task1_gui.cpp
+│   ├── task1_render.h
+│   ├── task1_render.cpp
+│   ├── tab_runtime.h
+│   ├── tab_runtime.cpp
 │   ├── task2_commands.h
 │   ├── task2_commands.cpp
 │   ├── task3_parser.h
@@ -142,8 +148,9 @@ terminator/
 - `tasks/common.h` / `tasks/common.cpp`: shared types (`Tab`,
   `Command`), shared history, the text buffer, the prompt, and the
   multiline-completeness checks.
-- `tasks/task1_gui.cpp`: X11 window, tab bar, drawing, scrolling,
-  keyboard and mouse handling, and the event loop.
+- `tasks/task1_gui.cpp`: X11 events, input, and the event loop.
+- `tasks/task1_render.cpp`: tab bar, wrapped output, prompt, and cursor drawing.
+- `tasks/tab_runtime.cpp`: per-tab thread/process workers and IPC with the GUI.
 - `tasks/task2_commands.cpp`: the built-ins `cd`, `exit`, `history`
   and `source`.
 - `tasks/task3_parser.cpp`: tokenising, quoting, `$VAR` expansion,
@@ -160,16 +167,11 @@ terminator/
   current input line. Task 10 file-name completion and Task 11 bash
   script interpretation are also not implemented beyond the simple
   line-by-line `source` command.
-- Process mode (`useProcess=True`) is not implemented; only thread
-  mode runs. Closing a tab does not affect other tabs' buffers or
-  working directories.
+- Each tab keeps its own shell state and job table.
 - Built-ins work only as a single command, not inside a pipeline
   (for example, `cd | cat` is not supported).
-- Tabs do not run commands at the same time: a command in the active
-  tab runs to completion before the GUI handles other input, so a
-  long-running command blocks redrawing until it finishes. A tab's
-  buffer, input and working directory are kept while another tab is
-  shown.
+- Command output is transferred to the GUI after each command finishes;
+  output is not streamed while the command is running.
 - `source` runs a file line by line with the same shell; it does not
   implement script variables, arguments, `if` tests or `exit [n]`
   from Task 11.
