@@ -1,12 +1,15 @@
+// Input editing helper interface.
+
 #pragma once
 
 #include "common.h"
 
+// Input text, cursor position, and history selection.
 struct EditState {
-    string line;
-    int cursor = 0;
-    int hist_idx = -1;
-    string saved_line;
+  string line;
+  int cursor = 0;
+  int hist_idx = -1;
+  string saved_line;
 };
 
 bool hotkey_left(EditState &e);

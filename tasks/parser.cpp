@@ -1,6 +1,8 @@
-#include "task3_parser.h"
+// Parse, expand, and validate shell command lines.
 
-#include "task5_pipes.h"
+#include "parser.h"
+
+#include "pipes.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -32,6 +34,7 @@ struct Tok {
   bool tilde = true;
 };
 
+// Find matching parentheses in nested command substitutions.
 size_t find_paren_end(const string &s, size_t open) {
   int depth = 1;
   char quote = 0, backtick = 0;
@@ -140,6 +143,7 @@ string capture_output(const string &line, Tab &tab) {
   return strip_trailing_newlines(out);
 }
 
+// Tokenize a line, expand values, and build pipeline commands.
 bool parse_line(const string &line, Tab &tab, vector<Command> &cmds, string &error) {
   ParserCwd cwd(tab);
   vector<Tok> toks;

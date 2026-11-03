@@ -1,15 +1,18 @@
+// Shared output buffers, history, and prompt helpers.
+
 #include "common.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <fcntl.h>
+#include <pwd.h>
 #include <semaphore.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <fcntl.h>
-#include <pwd.h>
 #include <unistd.h>
 
 vector<string> g_history;
@@ -17,6 +20,7 @@ mutex g_history_mutex;
 
 static const size_t HISTORY_LIMIT = 10000;
 static const size_t HISTORY_LINE_SIZE = 4096;
+
 struct SharedHistory {
   sem_t semaphore;
   uint32_t count;
@@ -25,6 +29,7 @@ struct SharedHistory {
 static SharedHistory *shared_history = nullptr;
 static string shared_history_name;
 
+// Copy history while the shared semaphore is held.
 static void copy_history_from_shared() {
   g_history.clear();
   for (uint32_t i = 0; i < shared_history->count; i++)
@@ -50,6 +55,7 @@ void flush_pending(Tab &tab) {
   tab.pending.clear();
 }
 
+// Keep partial output until a newline completes the row.
 void append_text(Tab &tab, const string &text, int kind) {
   if (text.empty()) {
     return;
@@ -76,6 +82,7 @@ void append_line(Tab &tab, const string &line, int kind) {
   append_text(tab, line + "\n", kind);
 }
 
+// Persist a command and refresh the process-shared history.
 void add_history(const string &line) {
   lock_guard<mutex> lock(g_history_mutex);
 
@@ -193,6 +200,7 @@ vector<string> search_history(const string &term) {
   return matches;
 }
 
+// Build the prompt from the current system username.
 string prompt_for(const Tab &) {
   const char *username = getenv("USER");
   if (!username || !*username) {

@@ -1,7 +1,11 @@
-#include "tasks/task1_gui.h"
+// Entry point for Terminator terminal emulator.
+
+#include "tasks/gui.h"
+
 #include <string>
 
 int main(int argc, char **argv) {
+  // Check for process isolation mode flag
   bool process_mode = false;
 
   for (int i = 1; i < argc; i++) {
@@ -10,5 +14,6 @@ int main(int argc, char **argv) {
     }
   }
 
+  // Launch the main GUI event loop
   return gui_run(process_mode);
 }

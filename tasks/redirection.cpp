@@ -1,4 +1,6 @@
-#include "task4_redirection.h"
+// Open and validate command input and output files.
+
+#include "redirection.h"
 
 #include <filesystem>
 #include <fcntl.h>
@@ -9,6 +11,7 @@ string resolve_path(const string &cwd, const string &path) {
   return (filesystem::path(cwd) / path).lexically_normal().string();
 }
 
+// Reject missing input before starting a command process.
 bool check_input_file(const Command &cmd, string &error, const string &cwd) {
   if (cmd.in_file.empty()) {
     return true;

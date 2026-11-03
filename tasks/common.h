@@ -1,19 +1,23 @@
+// Shared shell data structures and function declarations.
+
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <vector>
-#include <mutex>
 
 using namespace std;
 
 const int LINE_OUTPUT = 0;
 const int LINE_COMMAND = 1;
 
+// One rendered line in the terminal scrollback.
 struct Line {
   string text;
   int kind = LINE_OUTPUT;
 };
 
+// Parsed arguments and optional redirection paths.
 struct Command {
   vector<string> args;
   string in_file;
@@ -21,6 +25,7 @@ struct Command {
   bool out_append = false;
 };
 
+// Shell state kept separately for each tab.
 struct Tab {
   string cwd;
   vector<Line> lines;
