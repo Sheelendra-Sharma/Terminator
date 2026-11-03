@@ -1,9 +1,7 @@
 #include "task8_jobs.h"
-
 #include "task3_parser.h"
 #include "task1_gui.h"
 #include "task5_pipes.h"
-
 #include <algorithm>
 #include <cerrno>
 #include <csignal>

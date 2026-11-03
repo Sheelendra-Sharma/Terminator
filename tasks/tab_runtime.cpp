@@ -1,9 +1,7 @@
 #include "tab_runtime.h"
-
 #include "task1_gui.h"
 #include "task5_pipes.h"
 #include "task8_jobs.h"
-
 #include <atomic>
 #include <condition_variable>
 #include <csignal>

@@ -1,14 +1,11 @@
 #include "task1_gui.h"
-
 #include "common.h"
 #include "task1_render.h"
 #include "tab_runtime.h"
-
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
-
 #include <algorithm>
 #include <csignal>
 #include <cstdio>

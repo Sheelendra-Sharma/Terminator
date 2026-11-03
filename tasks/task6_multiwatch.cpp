@@ -1,7 +1,6 @@
 #include "task6_multiwatch.h"
 #include "task1_gui.h"
 #include "tab_runtime.h"
-
 #include <csignal>
 #include <ctime>
 #include <poll.h>

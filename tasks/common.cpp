@@ -1,5 +1,4 @@
 #include "common.h"
-
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
