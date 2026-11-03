@@ -1,7 +1,10 @@
+// Tab worker and runtime interface.
+
 #pragma once
 
 #include "common.h"
 
+// Start the per-tab worker runtime.
 void tab_runtime_init(bool process_mode, int gui_fd);
 void tab_runtime_add(const Tab &tab);
 void tab_runtime_remove(size_t index);

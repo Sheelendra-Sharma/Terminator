@@ -1,15 +1,18 @@
+// Job control interface.
+
 #pragma once
 
 #include "common.h"
 
+// State and process details for a background job.
 enum JobState { JOB_RUNNING, JOB_STOPPED, JOB_DONE };
 
 struct Job {
-    int id;
-    pid_t pid;
-    string cmd;
-    JobState state;
-    int output_fd = -1;
+  int id;
+  pid_t pid;
+  string cmd;
+  JobState state;
+  int output_fd = -1;
 };
 
 extern thread_local vector<Job> g_jobs;

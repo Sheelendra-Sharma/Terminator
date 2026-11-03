@@ -1,14 +1,14 @@
-#include "task1_gui.h"
+// X11 window, keyboard input, and event handling.
 
+#include "gui.h"
 #include "common.h"
-#include "task1_render.h"
+#include "render.h"
 #include "tab_runtime.h"
 
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
-
 #include <algorithm>
 #include <csignal>
 #include <cstdio>
@@ -36,6 +36,7 @@ static Atom clipboard_atom, clipboard_property, clipboard_utf8;
 static string copied_text;
 static bool paste_pending = false, paste_fallback = false;
 
+// The GUI owns and serves the X11 clipboard selections.
 static void copy_text(const string &text) {
   copied_text = text;
   XSetSelectionOwner(dpy, clipboard_atom, win, CurrentTime);
@@ -132,6 +133,7 @@ static bool is_ctrl(bool ctrl, KeySym sym, char c) {
   return sym == (KeySym)c || sym == (KeySym)(c - 32) || sym == (KeySym)(c - 'a' + 1);
 }
 
+// Wait for X11 input while collecting worker updates.
 static bool next_event(XEvent &event) {
   if (!deferred_events.empty()) {
     event = deferred_events.front();
@@ -157,6 +159,7 @@ int gui_event_fd() {
   return worker_fd >= 0 ? worker_fd : (dpy ? ConnectionNumber(dpy) : -1);
 }
 
+// Read job-control keys for commands running outside the GUI thread.
 int gui_poll_job_control() {
   int signal = 0;
   if (tab_worker_poll_control(signal)) return signal;
@@ -238,6 +241,7 @@ static void handle_enter() {
   redraw();
 }
 
+// Create the window and process X11 events.
 int gui_run(bool process_mode) {
   ::process_mode = process_mode;
   load_history();

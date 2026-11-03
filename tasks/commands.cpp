@@ -1,9 +1,11 @@
-#include "task2_commands.h"
-#include "task3_parser.h"
-#include "task4_redirection.h"
-#include "task5_pipes.h"
-#include "task6_multiwatch.h"
-#include "task8_jobs.h"
+// Implement the shell built-in commands.
+
+#include "commands.h"
+#include "parser.h"
+#include "redirection.h"
+#include "pipes.h"
+#include "multiwatch.h"
+#include "jobs.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -16,6 +18,7 @@ bool is_builtin(const string &name) {
       || name == "clear";
 }
 
+// Built-ins update shell state without starting another shell.
 int run_builtin(Tab &tab, const Command &cmd, string &out, bool interactive) {
   string name = cmd.args[0];
 

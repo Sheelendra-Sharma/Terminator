@@ -1,8 +1,9 @@
-#include "tab_runtime.h"
+// Run each tab in a thread or child process.
 
-#include "task1_gui.h"
-#include "task5_pipes.h"
-#include "task8_jobs.h"
+#include "tab_runtime.h"
+#include "gui.h"
+#include "pipes.h"
+#include "jobs.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -50,6 +51,7 @@ thread_local int control_write_fd = -1;
 thread_local int command_fd = -1;
 thread_local Worker *current_worker = nullptr;
 
+// Transfer complete messages over the worker IPC channels.
 bool read_exact(int fd, void *buffer, size_t size) {
   char *out = static_cast<char *>(buffer);
   while (size) {
@@ -250,6 +252,7 @@ shared_ptr<Worker> create_worker(const Tab &tab) {
   return worker;
 }
 
+// Stop a tab before releasing its thread or child process.
 void stop_worker(const shared_ptr<Worker> &worker) {
   if (!worker) return;
   if (!worker->process) {

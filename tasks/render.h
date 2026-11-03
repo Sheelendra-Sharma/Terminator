@@ -1,3 +1,5 @@
+// Terminal renderer interface and drawing colors.
+
 #pragma once
 
 #include "common.h"
@@ -10,6 +12,7 @@ struct TerminalColors {
   unsigned long tab_bar, active_tab, inactive_tab, background;
 };
 
+// Draw the tab strip and active terminal buffer.
 class TerminalRenderer {
  public:
   void configure(Display *display, Window window, GC gc, XFontStruct *font,

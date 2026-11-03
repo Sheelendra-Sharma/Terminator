@@ -1,195 +1,84 @@
 # Terminator
 
-A custom terminal emulator and shell for Linux, written in C++17.
-It draws its own X11 window, runs one shell per tab, and supports
-external commands, built-ins, multiline input and quoting, I/O
-redirection, and pipelines. This build follows the project
-specification (Terminator, CS69201) up to and including Task 5.
+Terminator is a small Linux terminal emulator and shell written in C++17. It draws its interface with Xlib and runs commands through the POSIX process APIs.
 
-## Implemented features
+## Requirements
 
-- Task 1: X11 GUI and tabs. One text buffer per tab, prompt, typed
-  input, command output, scrolling with the mouse wheel and PageUp /
-  PageDown. Click a tab to switch, click `[ + ]` to open a tab,
-  Ctrl+T for a new tab, Ctrl+W to close a tab, Ctrl+PageUp / Ctrl+PageDown
-  to switch tabs, Ctrl+L to clear the screen, Ctrl+C to cancel the
-  current line. Typed commands and the prompt are drawn in bright
-  green, command output in white, so a command is easy to tell apart
-  from its output. The event loop uses `XNextEvent`, so it blocks instead
-  of busy-waiting. Output is captured through pipes and drawn in the tab.
-- Task 2: Built-in and external commands. External commands run with
-  `fork` + `execvp` and the shell waits for them. Built-ins: `cd`,
-  `exit`, `history`, `source`. An unknown command prints
-  `terminator: <name>: command not found` and the tab stays usable.
-  The last exit status is kept in `$?`. History is shared by all tabs
-  (protected by a mutex) and saved to `~/.terminator_history`.
-- Task 3: Multiline input and quoting. An incomplete command shows the
-  `>` continuation prompt. Supported: trailing `\` line continuation,
-  single and double quotes spanning lines, `$(...)` and backtick
-  command substitution including nested and multiline forms (innermost
-  runs first), and bash quoting rules (single quotes are literal,
-  double quotes still expand `$VAR` and substitutions).
-- Task 4: I/O redirection with `<` and `>` (and `>>` for append), using
-  `dup2` in the child. A missing input file is reported instead of
-  running the command. Each child opens its own file descriptors, so
-  commands reading the same file do not interfere with each other.
-- Task 5: Pipes of any length (`N` commands use `N-1` pipes and
-  `N` child processes), combined with redirection. Unquoted `*`, `?`
-  and `[...]` are expanded to matching files, and `~` expands to the
-  home directory. Command output is captured through a pipe and added
-  to the active tab; commands without explicit input (such as plain
-  `cat`) receive EOF from `/dev/null`.
-- Task 7: Arrow keys and Ctrl+A/E/U/K edit the input line; Up/Down browse
-  history. Ctrl+Shift+C copies the current input line through the X11
-  clipboard, and Ctrl+Shift+V pastes clipboard text at the cursor.
-- Task 8: Ctrl+C interrupts a running foreground process group. Ctrl+Z
-  suspends it and records it as a job; `jobs`, `fg`, and `bg` manage jobs.
-- Task 9: Up to 10,000 commands are kept in shared history. `history`
-  shows the latest 1,000; Ctrl+R searches for the latest exact match or
-  commands with the longest common substring (at least 3 characters).
+- A C++17 compiler, `make`, and X11 development headers.
 
-## Dependencies
+On Debian or Ubuntu:
 
-A C++ compiler, make, and the X11 development headers.
-
-```bash
+```sh
 sudo apt update
 sudo apt install build-essential libx11-dev
 ```
 
-For a headless machine, `xvfb` lets you run the GUI without a real
-display:
-
-```bash
-sudo apt install xvfb
-```
-
 ## Build and run
 
-From the project root:
+Run these commands from the project directory:
 
-```bash
+```sh
 make
 ./terminator
 ```
 
-`./terminator` runs in thread mode (the default in the specification).
-Each tab has a worker thread. `./terminator useProcess=True` runs the GUI in
-the parent and gives every tab its own child process, connected to the GUI
-with a local socket pair. Commands in either mode still use `fork` and
-`execvp`; history is shared between tabs and protected by a process-shared
-semaphore.
+The default is thread mode: the GUI is in one process and each tab has a worker thread. To run each tab in a separate process, use:
 
-Headless test run:
-
-```bash
-Xvfb :99 -screen 0 1024x768x24 &
-DISPLAY=:99 ./terminator
+```sh
+./terminator useProcess=True
 ```
+
+Both modes use the same X11 window and command interface. In process mode, tab workers communicate with the GUI over local socket pairs. Commands typed into the shell run as child processes in either mode.
+
+## Features
+
+- X11 terminal window with multiple tabs, scrollback, keyboard and mouse tab controls.
+- Built-ins: `cd`, `exit`, `history`, `source`, `clear`, `multiWatch`, `jobs`, `fg`, and `bg`.
+- External commands run with `fork()` and `execvp()`. Pipelines, `<`, `>`, `>>`, glob patterns, `~`, environment variables, quoting, and command substitution are supported.
+- Multiline input for unfinished quotes, substitutions, and trailing backslashes.
+- Line editing, command history navigation, Ctrl+R history search, and X11 clipboard copy/paste.
+- Ctrl+C interrupts a foreground command; Ctrl+Z suspends it. Background jobs can be listed and resumed.
+- `multiWatch ["cmd1", "cmd2"]` runs commands in parallel, reports output periodically, and stops with Ctrl+C.
+- Up to 10,000 history entries are kept in `~/.terminator_history` and shared between tabs. `history` displays up to the latest 1,000 entries.
 
 ## Example commands
 
-```bash
+```sh
 cd ~/Downloads
-gcc -o myprog myprog.c
-./myprog
-notacommand
-echo 'literal: $HOME' "expanded: $HOME"
-echo "Isn't process creation exciting?\
-Fork, exec, repeat!"
-echo "Files in $(basename $(pwd)): $(ls | wc -l)"
-sort < somefile.txt
-ls > abc
-./a.out < infile.txt > outfile.txt
 ls *.txt | wc -l
-cat abc.c | sort | head -5
-ls *.txt | xargs rm
+sort < input.txt > sorted.txt
+echo "Home: $HOME"
+echo "Files: $(ls | wc -l)"
+sleep 30 &
+jobs
 history
-echo $?
 ```
 
-Multiline example, typed exactly as shown (the first line ends with `\`):
+## Limitations
+
+- Task 10 filename completion and Task 11 bash script interpretation are not implemented. `source` executes nonempty lines in the current shell; it does not implement bash variables, arguments, conditionals, or script syntax checking.
+- Hotkeys cannot currently be configured. Ctrl+Shift+C copies the current input line; selecting and copying terminal output is not supported.
+- Built-ins are not executed as pipeline stages.
+- Command output is added to the window after a command finishes, rather than streamed while it runs.
+- Each tab has its own working directory and job table.
+
+## Project layout
 
 ```text
-user@terminator> echo "Isn't process creation exciting?\
-> Fork, exec, repeat!"
-Isn't process creation exciting?
-Fork, exec, repeat!
-```
-
-## Folder structure
-
-```text
-terminator/
+.
 ├── main.cpp
 ├── tasks/
-│   ├── common.h
-│   ├── common.cpp
-│   ├── task1_gui.h
-│   ├── task1_gui.cpp
-│   ├── task1_render.h
-│   ├── task1_render.cpp
-│   ├── tab_runtime.h
-│   ├── tab_runtime.cpp
-│   ├── task2_commands.h
-│   ├── task2_commands.cpp
-│   ├── task3_parser.h
-│   ├── task3_parser.cpp
-│   ├── task4_redirection.h
-│   ├── task4_redirection.cpp
-│   ├── task5_pipes.h
-│   └── task5_pipes.cpp
-├── Makefile
-└── README.md
+│   ├── common.cpp / common.h       # Shared types, text buffers, and history
+│   ├── gui.cpp / gui.h             # X11 input and event loop
+│   ├── render.cpp / render.h       # Window and tab drawing
+│   ├── tab_runtime.cpp / .h        # Thread/process tab workers and IPC
+│   ├── commands.cpp / .h           # Shell built-ins
+│   ├── parser.cpp / .h             # Tokenizing and expansion
+│   ├── redirection.cpp / .h        # Input and output files
+│   ├── pipes.cpp / .h              # Commands, pipelines, and output capture
+│   ├── multiwatch.cpp / .h          # Periodic parallel commands
+│   ├── hotkeys.cpp / .h             # Input editing helpers
+│   └── jobs.cpp / .h                # Background and stopped jobs
+├── DESIGN.md
+└── Makefile
 ```
-
-- `main.cpp`: only parses the `useProcess=True` argument and starts
-  the GUI.
-- `tasks/common.h` / `tasks/common.cpp`: shared types (`Tab`,
-  `Command`), shared history, the text buffer, the prompt, and the
-  multiline-completeness checks.
-- `tasks/task1_gui.cpp`: X11 events, input, and the event loop.
-- `tasks/task1_render.cpp`: tab bar, wrapped output, prompt, and cursor drawing.
-- `tasks/tab_runtime.cpp`: per-tab thread/process workers and IPC with the GUI.
-- `tasks/task2_commands.cpp`: the built-ins `cd`, `exit`, `history`
-  and `source`.
-- `tasks/task3_parser.cpp`: tokenising, quoting, `$VAR` expansion,
-  command substitution, glob expansion, and pipeline parsing.
-- `tasks/task4_redirection.cpp`: opening input and output files for
-  redirection and checking a missing input file.
-- `tasks/task5_pipes.cpp`: running a line, running a pipeline with
-  pipes, and capturing output for command substitution.
-
-## Known limitations
-
-- Task 7 configurable key bindings, Ctrl+W word deletion, and mouse
-  selection of terminal output are not implemented. Copy copies the
-  current input line. Task 10 file-name completion and Task 11 bash
-  script interpretation are also not implemented beyond the simple
-  line-by-line `source` command.
-- Each tab keeps its own shell state and job table.
-- Built-ins work only as a single command, not inside a pipeline
-  (for example, `cd | cat` is not supported).
-- Command output is transferred to the GUI after each command finishes;
-  output is not streamed while the command is running.
-- `source` runs a file line by line with the same shell; it does not
-  implement script variables, arguments, `if` tests or `exit [n]`
-  from Task 11.
-
-## Troubleshooting
-
-- `cannot open X display`: there is no X server. On a desktop, run
-  from a terminal inside the graphical session. Headless, start
-  `Xvfb` first (see above) and set `DISPLAY=:99`.
-- `X11/Xlib.h: No such file or directory`: install `libx11-dev`
-  (see Dependencies), then run `make clean && make`.
-- `make: *** No rule to make target`: run `make` from the project
-  root, the directory containing this README and the Makefile, not
-  from inside `tasks/`.
-- Window opens but typing does nothing: click inside the window once
-  to give it keyboard focus, then type.
-- A command prints `command not found`: the program is not on `PATH`
-  or is not executable. For a program in the current directory, use
-  `./myprog`, not `myprog`.
-- The GUI looks blank after `Ctrl+L`: that only clears the screen
-  buffer; the prompt is still there, just type a command.

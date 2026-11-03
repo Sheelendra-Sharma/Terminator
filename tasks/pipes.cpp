@@ -1,9 +1,12 @@
-#include "task5_pipes.h"
-#include "task2_commands.h"
-#include "task3_parser.h"
-#include "task4_redirection.h"
-#include "task8_jobs.h"
-#include "task1_gui.h"
+// Run shell commands and connect pipelines.
+
+#include "pipes.h"
+#include "commands.h"
+#include "parser.h"
+#include "redirection.h"
+#include "jobs.h"
+#include "gui.h"
+
 #include <array>
 #include <csignal>
 #include <fcntl.h>
@@ -11,6 +14,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+// Dispatch one input line to a built-in or external command.
 int run_line(Tab &tab, const string &line, bool interactive, bool record_history) {
   bool blank = true;
 
@@ -51,6 +55,7 @@ int run_line(Tab &tab, const string &line, bool interactive, bool record_history
   return status;
 }
 
+// Connect pipeline stages and collect their output.
 static int execute_pipeline_impl(Tab &tab, const vector<Command> &cmds,
                                  string *capture, const string &command,
                                  bool interactive) {
